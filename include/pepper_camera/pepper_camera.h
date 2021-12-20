@@ -5,14 +5,14 @@
 #ifndef PEPPER_CAMERA_H
 #define PEPPER_CAMERA_H
 
+// Includes - ROS
+#include <ros/ros.h>
+
 // Includes - GStreamer
 extern "C"
 {
 #include <gst/gst.h>
 }
-
-// Includes - ROS
-#include <ros/ros.h>
 
 // Pepper camera namespace
 namespace pepper_camera
