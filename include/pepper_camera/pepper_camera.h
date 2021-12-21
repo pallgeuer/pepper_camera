@@ -37,7 +37,9 @@ namespace pepper_camera
 
 	private:
 		// GStreamer signal callbacks
+		static bool quit_main_loop_callback(GMainLoop* main_loop);
 		static void error_callback(GstBus* bus, GstMessage* msg, GMainLoop* main_loop);
+		static GstFlowReturn raw_sample_callback(GstElement* appsink, GstElement* data);
 
 		// ROS node handles
 		const ros::NodeHandle& m_nh_interface;
@@ -56,13 +58,17 @@ namespace pepper_camera
 			GstElement* rtpjpegdepay;
 			GstElement* jpegdec;
 			GstElement* fpsdisplaysink;
+			GstElement* convertrgb;
+			GstElement* appsinkraw;
 
 			bool valid() const {
 				return (
 					udpsrc != NULL &&
 					rtpjpegdepay != NULL &&
 					jpegdec != NULL &&
-					fpsdisplaysink != NULL
+					fpsdisplaysink != NULL &&
+					convertrgb != NULL &&
+					appsinkraw != NULL
 				);
 			}
 		};

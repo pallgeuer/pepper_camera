@@ -3,8 +3,10 @@
 
 // Includes
 #include <pepper_camera/pepper_camera.h>
+#include <glib-unix.h>
 #include <thread>
 #include <chrono>
+#include <inttypes.h>  // TODO: TEMP for PRIu64
 
 // Namespaces
 using namespace pepper_camera;
@@ -87,6 +89,8 @@ bool PepperCamera::init_stream()
 	m_elem->rtpjpegdepay = gst_element_factory_make("rtpjpegdepay", "rtpjpegdepay");
 	m_elem->jpegdec = gst_element_factory_make("jpegdec", "jpegdec");
 	m_elem->fpsdisplaysink = gst_element_factory_make("fpsdisplaysink", "fpsdisplaysink");
+	m_elem->convertrgb = gst_element_factory_make("videoconvert", "convertrgb");
+	m_elem->appsinkraw = gst_element_factory_make("appsink", "appsinkraw");
 
 	// Check that all pipeline elements were successfully created
 	if(!m_elem->valid())
@@ -95,26 +99,35 @@ bool PepperCamera::init_stream()
 		return false;
 	}
 
-	// Configure UDP source
+	// Create the pipeline
+	m_pipeline = gst_pipeline_new("pipeline");
+
+	// Configure the UDP source
 	ROS_INFO("Will listen to UDP on port %d", m_port);
 	GstCaps* udpsrc_caps = gst_caps_new_simple("application/x-rtp", "encoding-name", G_TYPE_STRING, "JPEG", NULL);
 	g_object_set(m_elem->udpsrc, "port", m_port, "caps", udpsrc_caps, NULL);
 	gst_caps_unref(udpsrc_caps);
 
-	// Create the pipeline
-	m_pipeline = gst_pipeline_new("pipeline");
+	// Configure the raw app sink
+	GstCaps* appsinkraw_caps = gst_caps_new_simple("video/x-raw", "format", G_TYPE_STRING, "RGB", NULL);
+	g_object_set(m_elem->appsinkraw, "emit-signals", TRUE, "caps", appsinkraw_caps, "sync", FALSE, NULL);
+	gst_caps_unref(appsinkraw_caps);
+	g_signal_connect(m_elem->appsinkraw, "new-sample", G_CALLBACK(PepperCamera::raw_sample_callback), m_pipeline);
 
 	// Add all elements to the pipeline
 	gst_bin_add_many(GST_BIN(m_pipeline),
 		m_elem->udpsrc,
 		m_elem->rtpjpegdepay,
 		m_elem->jpegdec,
-		m_elem->fpsdisplaysink,
+// 		m_elem->fpsdisplaysink,
+		m_elem->convertrgb,
+		m_elem->appsinkraw,
 		NULL
 	);
 
 	// Link all elements with 'always' pads
-	if(gst_element_link_many(m_elem->udpsrc, m_elem->rtpjpegdepay, m_elem->jpegdec, m_elem->fpsdisplaysink, NULL) != TRUE)
+// 	if(gst_element_link_many(m_elem->udpsrc, m_elem->rtpjpegdepay, m_elem->jpegdec, m_elem->fpsdisplaysink, NULL) != TRUE)
+	if(gst_element_link_many(m_elem->udpsrc, m_elem->rtpjpegdepay, m_elem->jpegdec, m_elem->convertrgb, m_elem->appsinkraw, NULL) != TRUE)
 	{
 		ROS_ERROR("Failed to link some of the required pipeline elements");
 		return false;
@@ -122,11 +135,12 @@ bool PepperCamera::init_stream()
 
 	// Create a main loop
 	m_main_loop = g_main_loop_new(NULL, FALSE);
+	g_unix_signal_add(SIGINT, G_SOURCE_FUNC(PepperCamera::quit_main_loop_callback), m_main_loop);
 
 	// Enable and listen to error messages on the bus
 	GstBus* bus = gst_element_get_bus(m_pipeline);
 	gst_bus_add_signal_watch(bus);
-	g_signal_connect(G_OBJECT(bus), "message::error", (GCallback) PepperCamera::error_callback, m_main_loop);
+	g_signal_connect(G_OBJECT(bus), "message::error", G_CALLBACK(PepperCamera::error_callback), m_main_loop);
 	gst_object_unref(bus);
 
 	// Return success
@@ -179,6 +193,17 @@ void PepperCamera::cleanup_stream()
 	}
 }
 
+// Quit main loop callback
+bool PepperCamera::quit_main_loop_callback(GMainLoop* main_loop)
+{
+	// Quit the main loop
+	ROS_INFO("Quitting main loop...");
+	g_main_loop_quit(main_loop);
+
+	// Keep the source of this callback
+	return TRUE;
+}
+
 // GStreamer error callback
 void PepperCamera::error_callback(GstBus* bus, GstMessage* msg, GMainLoop* main_loop)
 {
@@ -194,5 +219,35 @@ void PepperCamera::error_callback(GstBus* bus, GstMessage* msg, GMainLoop* main_
 
 	// Quit the main loop
 	g_main_loop_quit(main_loop);
+}
+
+// New raw image sample callback
+GstFlowReturn PepperCamera::raw_sample_callback(GstElement* appsink, GstElement* pipeline)
+{
+	// Retrieve the sample
+	GstSample* raw_sample;
+	g_signal_emit_by_name(appsink, "pull-sample", &raw_sample);
+	if(!raw_sample)
+		return GST_FLOW_ERROR;
+
+	GstBuffer* buffer = gst_sample_get_buffer(raw_sample);
+	if(buffer == NULL)
+		return GST_FLOW_ERROR;
+
+	// TODO: gst_sample_get_info()
+
+	GstMemory *memory = gst_buffer_get_memory(buffer, 0);
+	GstMapInfo info;
+	gst_memory_map(memory, &info, GST_MAP_READ);
+	gsize &buf_size = info.size;
+	guint8* &buf_data = info.data;
+	GstClockTime bt = gst_element_get_base_time(pipeline);
+	ROS_INFO("Got %u bytes at address %p (frame %u-%u, duration %" PRIu64 ", PTS %.9f, DTS %" PRIu64 ")", (unsigned int) buf_size, (void *) buf_data, (unsigned int) buffer->offset, (unsigned int) buffer->offset_end, (uint64_t) buffer->duration, buffer->pts * 1e-9, (uint64_t) buffer->dts);
+
+	// Free the sample
+	gst_sample_unref(raw_sample);
+
+	// Return that the data flow is okay
+	return GST_FLOW_OK;
 }
 // EOF

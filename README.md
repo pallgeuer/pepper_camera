@@ -25,7 +25,7 @@ Go to the Pepper robot page by entering the robot's IP address in the browser an
 
 SSH into the Pepper robot and start streaming video (it would be best to automate this somehow so that it can be triggered remotely from code):
 ```sh
-gst-launch-0.10 -v v4l2src device=/dev/video0 ! 'video/x-raw-yuv,width=640,height=480' ! jpegenc quality=[QUALITY] ! rtpjpegpay ! udpsink ! host=[IP] port=[PORT]
+gst-launch-0.10 -v v4l2src device=/dev/video0 ! 'video/x-raw-yuv,width=640,height=480' ! jpegenc quality=[QUALITY] ! rtpjpegpay ! udpsink sync=false host=[IP] port=[PORT]
 ```
 Note that:
 * `[IP]` should be the IP address of the PC you wish to stream the video to, and `[PORT]` the corresponding port
