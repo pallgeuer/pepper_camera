@@ -266,25 +266,82 @@ bool PepperCamera::init_stream()
 		gst_bin_add_many_ref(pipeline_bin, m_elem->preview, m_elem->preview_queue, NULL);
 	}
 
-
-
-
-
-
-
-	// TODO: COMMENT
+	// Link the UDP source
 	int link_success = TRUE;
 	link_success &= gst_element_link(m_elem->udpsrc, m_elem->rtpjpegdepay);
 
-// 		GstCaps* record_h264_caps = gst_caps_new_simple("video/x-h264", "stream-format", G_TYPE_STRING, "avc", "profile", G_TYPE_STRING, m_record_h264_profile.c_str(), NULL);
-// 		g_object_set(m_elem->record_h264_caps, "caps", record_h264_caps, NULL); // TODO: Use gst_element_link_filtered instead
-// 		gst_caps_unref(record_h264_caps);
+	// Link the JPEG over RTP depayloader source/tee
+	if(m_elem->tee_jpeg)
+	{
+		link_success &= gst_element_link(m_elem->rtpjpegdepay, m_elem->tee_jpeg);
+		// TODO: Manually link m_elem->tee_jpeg to whichever exists of: m_elem->publish_jpeg_queue, m_elem->record_jpegs_queue, m_elem->record_mjpeg_queue, m_elem->jpegdec_queue
+		if(m_elem->publish_jpeg_queue)
+			link_success &= gst_element_link(m_elem->publish_jpeg_queue, m_elem->publish_jpeg);
+		if(m_elem->record_jpegs_queue)
+			link_success &= gst_element_link(m_elem->record_jpegs_queue, m_elem->record_jpegs);
+		if(m_elem->record_mjpeg_queue)
+			link_success &= gst_element_link(m_elem->record_mjpeg_queue, m_elem->record_mjpeg_mux);
+		if(m_elem->jpegdec_queue)
+			link_success &= gst_element_link(m_elem->jpegdec_queue, m_elem->jpegdec);
+	}
+	else if(m_elem->publish_jpeg)
+		link_success &= gst_element_link(m_elem->rtpjpegdepay, m_elem->publish_jpeg);
+	else if(m_elem->record_jpegs)
+		link_success &= gst_element_link(m_elem->rtpjpegdepay, m_elem->record_jpegs);
+	else if(m_elem->record_mjpeg_mux)
+		link_success &= gst_element_link(m_elem->rtpjpegdepay, m_elem->record_mjpeg_mux);
+	else if(m_elem->jpegdec)
+		link_success &= gst_element_link(m_elem->rtpjpegdepay, m_elem->jpegdec);
+	else
+	{
+		ROS_ERROR("Failed to link src pad of element: rtpjpegdepay");
+		return false;
+	}
 
+	// Link the MJPEG recorder
+	if(m_elem->record_mjpeg)
+		link_success &= gst_element_link(m_elem->record_mjpeg_mux, m_elem->record_mjpeg);
 
+	// Link the JPEG decoder source/tee
+	if(m_elem->tee_yuv)
+	{
+		link_success &= gst_element_link(m_elem->jpegdec, m_elem->tee_yuv);
+		// TODO: Manually link m_elem->tee_yuv to whichever exists of: m_elem->publish_yuv_queue, m_elem->publish_rgb_queue, m_elem->record_h264_queue, m_elem->preview_queue
+		if(m_elem->publish_yuv_queue)
+			link_success &= gst_element_link(m_elem->publish_yuv_queue, m_elem->publish_yuv);
+		if(m_elem->publish_rgb_queue)
+			link_success &= gst_element_link(m_elem->publish_rgb_queue, m_elem->publish_rgb_convert);
+		if(m_elem->record_h264_queue)
+			link_success &= gst_element_link(m_elem->record_h264_queue, m_elem->record_h264_enc);
+		if(m_elem->preview_queue)
+			link_success &= gst_element_link(m_elem->preview_queue, m_elem->preview);
+	}
+	else if(m_elem->publish_yuv)
+		link_success &= gst_element_link(m_elem->jpegdec, m_elem->publish_yuv);
+	else if(m_elem->publish_rgb_convert)
+		link_success &= gst_element_link(m_elem->jpegdec, m_elem->publish_rgb_convert);
+	else if(m_elem->record_h264_enc)
+		link_success &= gst_element_link(m_elem->jpegdec, m_elem->record_h264_enc);
+	else if(m_elem->preview)
+		link_success &= gst_element_link(m_elem->jpegdec, m_elem->preview);
+	else
+	{
+		ROS_ERROR("Failed to link src pad of element: jpegdec");
+		return false;
+	}
 
+	// Link the RGB publisher
+	if(m_elem->publish_rgb)
+		link_success &= gst_element_link(m_elem->publish_rgb_convert, m_elem->publish_rgb);
 
-
-
+	// Link the H264 recorder
+	if(m_elem->record_h264)
+	{
+		GstCaps* record_h264_caps = gst_caps_new_simple("video/x-h264", "stream-format", G_TYPE_STRING, "avc", "profile", G_TYPE_STRING, m_record_h264_profile.c_str(), NULL);
+		link_success &= gst_element_link_filtered(m_elem->record_h264_enc, m_elem->record_h264_mux, record_h264_caps);
+		gst_caps_unref(record_h264_caps);
+		link_success &= gst_element_link(m_elem->record_h264_mux, m_elem->record_h264);
+	}
 
 	// Abort if not all pipeline elements were linked successfully
 	if(link_success != TRUE)
