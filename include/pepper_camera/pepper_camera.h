@@ -64,45 +64,64 @@ namespace pepper_camera
 			GstElement* udpsrc;
 			GstElement* rtpjpegdepay;
 			GstElement* tee_jpeg;
+			GstPad*     publish_jpeg_pad;
 			GstElement* publish_jpeg_queue;
 			GstElement* publish_jpeg;
+			GstPad*     record_jpegs_pad;
 			GstElement* record_jpegs_queue;
 			GstElement* record_jpegs;
+			GstPad*     record_mjpeg_pad;
 			GstElement* record_mjpeg_queue;
 			GstElement* record_mjpeg_mux;
 			GstElement* record_mjpeg;
+			GstPad*     jpegdec_pad;
 			GstElement* jpegdec_queue;
 			GstElement* jpegdec;
 			GstElement* tee_yuv;
+			GstPad*     publish_yuv_pad;
 			GstElement* publish_yuv_queue;
 			GstElement* publish_yuv;
+			GstPad*     publish_rgb_pad;
 			GstElement* publish_rgb_queue;
 			GstElement* publish_rgb_convert;
 			GstElement* publish_rgb;
+			GstPad*     record_h264_pad;
 			GstElement* record_h264_queue;
 			GstElement* record_h264_enc;
 			GstElement* record_h264_mux;
 			GstElement* record_h264;
+			GstPad*     preview_pad;
 			GstElement* preview_queue;
 			GstElement* preview;
 		};
 
 		// GStreamer variables
+		guint m_sigint_callback_id = 0U;
 		GSElements* m_elem = NULL;
 		GstElement* m_pipeline = NULL;
 		GMainLoop* m_main_loop = NULL;
+		bool m_queue_overrun = false;
 
-		// GStreamer signal callbacks
-		static bool quit_main_loop_callback(GMainLoop* main_loop);
-		static void stream_error_callback(GstBus* bus, GstMessage* msg, GMainLoop* main_loop);
+		// GStreamer callbacks
+		static gboolean sigint_callback(PepperCamera* pc);
+		static void stream_eos_callback(GstBus* bus, GstMessage* msg, PepperCamera* pc);
+		static void stream_warning_callback(GstBus* bus, GstMessage* msg, PepperCamera* pc);
+		static void stream_error_callback(GstBus* bus, GstMessage* msg, PepperCamera* pc);
+		static void queue_overrun_callback(GstElement* queue, PepperCamera* pc);
 		static GstFlowReturn publish_jpeg_callback(GstElement* appsink, PepperCamera* pc);
 		static GstFlowReturn publish_yuv_callback(GstElement* appsink, PepperCamera* pc);
 		static GstFlowReturn publish_rgb_callback(GstElement* appsink, PepperCamera* pc);
 
-		// Utilities
-		static bool ensure_extension(std::string& str, const std::string& ext);
+		// GStreamer utilities
+		void configure_queue(GstElement* queue);
+		static gboolean link_tee_queue(GstElement* tee, GstElement* queue, GstPad*& tee_pad);
 		static gboolean gst_bin_add_ref(GstBin *bin, GstElement *element);
 		static void gst_bin_add_many_ref(GstBin *bin, GstElement *element1, ...) G_GNUC_NULL_TERMINATED;
+		void cancel_main_loop();
+		void quit_main_loop();
+
+		// Misc utilities
+		static bool ensure_extension(std::string& str, const std::string& ext);
 	};
 }
 

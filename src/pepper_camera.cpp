@@ -11,6 +11,10 @@
 // Namespaces
 using namespace pepper_camera;
 
+//
+// Constructor
+//
+
 // Constructor
 PepperCamera::PepperCamera(const ros::NodeHandle& nh_interface, const ros::NodeHandle& nh_param) :
 	m_nh_interface(nh_interface),
@@ -19,6 +23,10 @@ PepperCamera::PepperCamera(const ros::NodeHandle& nh_interface, const ros::NodeH
 	// Reset the configuration variables
 	reset_config();
 }
+
+//
+// Run
+//
 
 // Run the Pepper camera loop
 void PepperCamera::run()
@@ -55,6 +63,10 @@ void PepperCamera::run()
 	ROS_INFO("Pepper camera stream has exited");
 }
 
+//
+// Configuration
+//
+
 // Reset the configuration variables
 void PepperCamera::reset_config()
 {
@@ -90,6 +102,10 @@ bool PepperCamera::configure()
 	return true;
 }
 
+//
+// Stream management
+//
+
 // Initialise the Pepper camera stream
 bool PepperCamera::init_stream()
 {
@@ -111,7 +127,7 @@ bool PepperCamera::init_stream()
 	int tee_yuv_count = m_publish_yuv + m_publish_rgb + record_h264 + m_preview;
 	bool have_tee_yuv = (tee_yuv_count >= 2);
 	bool have_jpegdec = (tee_yuv_count >= 1);
-	int tee_jpeg_count = m_publish_jpeg + record_jpegs + record_h264 + have_jpegdec;
+	int tee_jpeg_count = m_publish_jpeg + record_jpegs + record_mjpeg + have_jpegdec;
 	bool have_tee_jpeg = (tee_jpeg_count >= 2);
 
 	// Check that at least one sink is configured
@@ -191,7 +207,7 @@ bool PepperCamera::init_stream()
 	// Configure/add the UDP source
 	ROS_INFO("Will listen to UDP on port %d", m_port);
 	GstCaps* udpsrc_caps = gst_caps_new_simple("application/x-rtp", "encoding-name", G_TYPE_STRING, "JPEG", NULL);
-	g_object_set(m_elem->udpsrc, "port", m_port, "caps", udpsrc_caps, NULL);
+	g_object_set(m_elem->udpsrc, "port", (gint) m_port, "caps", udpsrc_caps, NULL);
 	gst_caps_unref(udpsrc_caps);
 	gst_bin_add_many_ref(pipeline_bin, m_elem->udpsrc, m_elem->rtpjpegdepay, NULL);
 
@@ -202,6 +218,7 @@ bool PepperCamera::init_stream()
 	// Configure/add the JPEG publisher app sink
 	if(m_elem->publish_jpeg)
 	{
+		configure_queue(m_elem->publish_jpeg_queue);
 		GstCaps* publish_jpeg_caps = gst_caps_new_empty_simple("image/jpeg");
 		g_object_set(m_elem->publish_jpeg, "caps", publish_jpeg_caps, "emit-signals", TRUE, "sync", FALSE, NULL);
 		gst_caps_unref(publish_jpeg_caps);
@@ -212,20 +229,25 @@ bool PepperCamera::init_stream()
 	// Configure/add the JPEGs recorder
 	if(m_elem->record_jpegs)
 	{
-		g_object_set(m_elem->record_jpegs, "location", m_record_jpegs.c_str(), "max-files", (unsigned int) std::max(m_record_jpegs_max, 0), "sync", FALSE, NULL);
+		configure_queue(m_elem->record_jpegs_queue);
+		g_object_set(m_elem->record_jpegs, "location", m_record_jpegs.c_str(), "max-files", (guint) std::max(m_record_jpegs_max, 0), "sync", FALSE, NULL);
 		gst_bin_add_many_ref(pipeline_bin, m_elem->record_jpegs, m_elem->record_jpegs_queue, NULL);
 	}
 
 	// Configure/add the MJPEG recorder
 	if(m_elem->record_mjpeg)
 	{
+		configure_queue(m_elem->record_mjpeg_queue);
 		g_object_set(m_elem->record_mjpeg, "location", m_record_mjpeg.c_str(), "sync", FALSE, NULL);
 		gst_bin_add_many_ref(pipeline_bin, m_elem->record_mjpeg_mux, m_elem->record_mjpeg, m_elem->record_mjpeg_queue, NULL);
 	}
 
 	// Configure/add the JPEG decoder
 	if(m_elem->jpegdec)
+	{
+		configure_queue(m_elem->jpegdec_queue);
 		gst_bin_add_many_ref(pipeline_bin, m_elem->jpegdec, m_elem->jpegdec_queue, NULL);
+	}
 
 	// Configure/add the YUV tee
 	if(m_elem->tee_yuv)
@@ -234,6 +256,7 @@ bool PepperCamera::init_stream()
 	// Configure/add the YUV publisher app sink
 	if(m_elem->publish_yuv)
 	{
+		configure_queue(m_elem->publish_yuv_queue);
 		GstCaps* publish_yuv_caps = gst_caps_new_simple("video/x-raw", "format", G_TYPE_STRING, "I420", NULL);
 		g_object_set(m_elem->publish_yuv, "caps", publish_yuv_caps, "emit-signals", TRUE, "sync", FALSE, NULL);
 		gst_caps_unref(publish_yuv_caps);
@@ -244,6 +267,7 @@ bool PepperCamera::init_stream()
 	// Configure/add the RGB publisher app sink
 	if(m_elem->publish_rgb)
 	{
+		configure_queue(m_elem->publish_rgb_queue);
 		GstCaps* publish_rgb_caps = gst_caps_new_simple("video/x-raw", "format", G_TYPE_STRING, "RGB", NULL);
 		g_object_set(m_elem->publish_rgb, "caps", publish_rgb_caps, "emit-signals", TRUE, "sync", FALSE, NULL);
 		gst_caps_unref(publish_rgb_caps);
@@ -254,7 +278,8 @@ bool PepperCamera::init_stream()
 	// Configure/add the H264 recorder
 	if(m_elem->record_h264)
 	{
-		g_object_set(m_elem->record_h264_enc, "pass", 0, "bitrate", (unsigned int) std::max(m_record_h264_bitrate, 50), "speed-preset", m_record_h264_speed, NULL);  // Pass = 0 = Constant bitrate encoding (CBR)
+		configure_queue(m_elem->record_h264_queue);
+		g_object_set(m_elem->record_h264_enc, "pass", 0, "bitrate", (guint) std::max(m_record_h264_bitrate, 50), "speed-preset", m_record_h264_speed, NULL);
 		g_object_set(m_elem->record_h264, "location", m_record_h264.c_str(), "sync", FALSE, NULL);
 		gst_bin_add_many_ref(pipeline_bin, m_elem->record_h264_enc, m_elem->record_h264_mux, m_elem->record_h264, m_elem->record_h264_queue, NULL);
 	}
@@ -262,7 +287,8 @@ bool PepperCamera::init_stream()
 	// Configure/add the preview window sink
 	if(m_elem->preview)
 	{
-		g_object_set(m_elem->preview, "text-overlay", true, "sync", TRUE, NULL);
+		configure_queue(m_elem->preview_queue);
+		g_object_set(m_elem->preview, "text-overlay", TRUE, "sync", FALSE, NULL);
 		gst_bin_add_many_ref(pipeline_bin, m_elem->preview, m_elem->preview_queue, NULL);
 	}
 
@@ -274,15 +300,14 @@ bool PepperCamera::init_stream()
 	if(m_elem->tee_jpeg)
 	{
 		link_success &= gst_element_link(m_elem->rtpjpegdepay, m_elem->tee_jpeg);
-		// TODO: Manually link m_elem->tee_jpeg to whichever exists of: m_elem->publish_jpeg_queue, m_elem->record_jpegs_queue, m_elem->record_mjpeg_queue, m_elem->jpegdec_queue
 		if(m_elem->publish_jpeg_queue)
-			link_success &= gst_element_link(m_elem->publish_jpeg_queue, m_elem->publish_jpeg);
+			link_success &= link_tee_queue(m_elem->tee_jpeg, m_elem->publish_jpeg_queue, m_elem->publish_jpeg_pad) & gst_element_link(m_elem->publish_jpeg_queue, m_elem->publish_jpeg);
 		if(m_elem->record_jpegs_queue)
-			link_success &= gst_element_link(m_elem->record_jpegs_queue, m_elem->record_jpegs);
+			link_success &= link_tee_queue(m_elem->tee_jpeg, m_elem->record_jpegs_queue, m_elem->record_jpegs_pad) & gst_element_link(m_elem->record_jpegs_queue, m_elem->record_jpegs);
 		if(m_elem->record_mjpeg_queue)
-			link_success &= gst_element_link(m_elem->record_mjpeg_queue, m_elem->record_mjpeg_mux);
+			link_success &= link_tee_queue(m_elem->tee_jpeg, m_elem->record_mjpeg_queue, m_elem->record_mjpeg_pad) & gst_element_link(m_elem->record_mjpeg_queue, m_elem->record_mjpeg_mux);
 		if(m_elem->jpegdec_queue)
-			link_success &= gst_element_link(m_elem->jpegdec_queue, m_elem->jpegdec);
+			link_success &= link_tee_queue(m_elem->tee_jpeg, m_elem->jpegdec_queue, m_elem->jpegdec_pad) & gst_element_link(m_elem->jpegdec_queue, m_elem->jpegdec);
 	}
 	else if(m_elem->publish_jpeg)
 		link_success &= gst_element_link(m_elem->rtpjpegdepay, m_elem->publish_jpeg);
@@ -303,31 +328,33 @@ bool PepperCamera::init_stream()
 		link_success &= gst_element_link(m_elem->record_mjpeg_mux, m_elem->record_mjpeg);
 
 	// Link the JPEG decoder source/tee
-	if(m_elem->tee_yuv)
+	if(m_elem->jpegdec)
 	{
-		link_success &= gst_element_link(m_elem->jpegdec, m_elem->tee_yuv);
-		// TODO: Manually link m_elem->tee_yuv to whichever exists of: m_elem->publish_yuv_queue, m_elem->publish_rgb_queue, m_elem->record_h264_queue, m_elem->preview_queue
-		if(m_elem->publish_yuv_queue)
-			link_success &= gst_element_link(m_elem->publish_yuv_queue, m_elem->publish_yuv);
-		if(m_elem->publish_rgb_queue)
-			link_success &= gst_element_link(m_elem->publish_rgb_queue, m_elem->publish_rgb_convert);
-		if(m_elem->record_h264_queue)
-			link_success &= gst_element_link(m_elem->record_h264_queue, m_elem->record_h264_enc);
-		if(m_elem->preview_queue)
-			link_success &= gst_element_link(m_elem->preview_queue, m_elem->preview);
-	}
-	else if(m_elem->publish_yuv)
-		link_success &= gst_element_link(m_elem->jpegdec, m_elem->publish_yuv);
-	else if(m_elem->publish_rgb_convert)
-		link_success &= gst_element_link(m_elem->jpegdec, m_elem->publish_rgb_convert);
-	else if(m_elem->record_h264_enc)
-		link_success &= gst_element_link(m_elem->jpegdec, m_elem->record_h264_enc);
-	else if(m_elem->preview)
-		link_success &= gst_element_link(m_elem->jpegdec, m_elem->preview);
-	else
-	{
-		ROS_ERROR("Failed to link src pad of element: jpegdec");
-		return false;
+		if(m_elem->tee_yuv)
+		{
+			link_success &= gst_element_link(m_elem->jpegdec, m_elem->tee_yuv);
+			if(m_elem->publish_yuv_queue)
+				link_success &= link_tee_queue(m_elem->tee_yuv, m_elem->publish_yuv_queue, m_elem->publish_yuv_pad) & gst_element_link(m_elem->publish_yuv_queue, m_elem->publish_yuv);
+			if(m_elem->publish_rgb_queue)
+				link_success &= link_tee_queue(m_elem->tee_yuv, m_elem->publish_rgb_queue, m_elem->publish_rgb_pad) & gst_element_link(m_elem->publish_rgb_queue, m_elem->publish_rgb_convert);
+			if(m_elem->record_h264_queue)
+				link_success &= link_tee_queue(m_elem->tee_yuv, m_elem->record_h264_queue, m_elem->record_h264_pad) & gst_element_link(m_elem->record_h264_queue, m_elem->record_h264_enc);
+			if(m_elem->preview_queue)
+				link_success &= link_tee_queue(m_elem->tee_yuv, m_elem->preview_queue, m_elem->preview_pad) & gst_element_link(m_elem->preview_queue, m_elem->preview);
+		}
+		else if(m_elem->publish_yuv)
+			link_success &= gst_element_link(m_elem->jpegdec, m_elem->publish_yuv);
+		else if(m_elem->publish_rgb_convert)
+			link_success &= gst_element_link(m_elem->jpegdec, m_elem->publish_rgb_convert);
+		else if(m_elem->record_h264_enc)
+			link_success &= gst_element_link(m_elem->jpegdec, m_elem->record_h264_enc);
+		else if(m_elem->preview)
+			link_success &= gst_element_link(m_elem->jpegdec, m_elem->preview);
+		else
+		{
+			ROS_ERROR("Failed to link src pad of element: jpegdec");
+			return false;
+		}
 	}
 
 	// Link the RGB publisher
@@ -347,6 +374,7 @@ bool PepperCamera::init_stream()
 	if(link_success != TRUE)
 	{
 		ROS_ERROR("Failed to link some of the required pipeline elements");
+		ROS_ERROR("Try: GST_DEBUG=4 COMMAND |& grep fail");
 		return false;
 	}
 	else
@@ -376,13 +404,19 @@ bool PepperCamera::init_stream()
 
 	// Create a main loop
 	m_main_loop = g_main_loop_new(NULL, FALSE);
-	g_unix_signal_add(SIGINT, G_SOURCE_FUNC(PepperCamera::quit_main_loop_callback), m_main_loop);
+	m_queue_overrun = false;
 
-	// Enable and listen to error messages on the bus
+	// Listen to selected messages on the bus
 	GstBus* bus = gst_element_get_bus(m_pipeline);
 	gst_bus_add_signal_watch(bus);
-	g_signal_connect(G_OBJECT(bus), "message::error", G_CALLBACK(PepperCamera::stream_error_callback), m_main_loop);
+	g_signal_connect(G_OBJECT(bus), "message::eos", G_CALLBACK(PepperCamera::stream_eos_callback), this);
+	g_signal_connect(G_OBJECT(bus), "message::warning", G_CALLBACK(PepperCamera::stream_warning_callback), this);
+	g_signal_connect(G_OBJECT(bus), "message::error", G_CALLBACK(PepperCamera::stream_error_callback), this);
 	gst_object_unref(bus);
+
+	// Add unix signal handler
+	m_sigint_callback_id = g_unix_signal_add(SIGINT, G_SOURCE_FUNC(PepperCamera::sigint_callback), this);
+	ROS_INFO("Added GStreamer SIGINT handler");
 
 	// Return success
 	return true;
@@ -412,6 +446,14 @@ void PepperCamera::cleanup_stream()
 	// Print that the stream is being cleaned up
 	ROS_INFO("Cleaning up Pepper camera stream...");
 
+	// Remove unix signal handler
+	if(m_sigint_callback_id > 0U)
+	{
+		g_source_remove(m_sigint_callback_id);
+		ROS_INFO("Removed GStreamer SIGINT handler");
+		m_sigint_callback_id = 0U;
+	}
+
 	// Delete the main loop
 	if(m_main_loop != NULL)
 	{
@@ -438,62 +480,135 @@ void PepperCamera::cleanup_stream()
 	}
 }
 
+//
+// GSElements
+//
+
 // Clear GStreamer pipeline elements
 void pepper_camera::PepperCamera::GSElements::clear()
 {
+	// Release all request pads
+	if(tee_jpeg)
+	{
+		if(publish_jpeg_pad) gst_element_release_request_pad(tee_jpeg, publish_jpeg_pad);
+		if(record_jpegs_pad) gst_element_release_request_pad(tee_jpeg, record_jpegs_pad);
+		if(record_mjpeg_pad) gst_element_release_request_pad(tee_jpeg, record_mjpeg_pad);
+		if(jpegdec_pad)      gst_element_release_request_pad(tee_jpeg, jpegdec_pad);
+	}
+	if(tee_yuv)
+	{
+		if(publish_yuv_pad) gst_element_release_request_pad(tee_yuv, publish_yuv_pad);
+		if(publish_rgb_pad) gst_element_release_request_pad(tee_yuv, publish_rgb_pad);
+		if(record_h264_pad) gst_element_release_request_pad(tee_yuv, record_h264_pad);
+		if(preview_pad)     gst_element_release_request_pad(tee_yuv, preview_pad);
+	}
+
 	// Unref all elements if they exist and reset the pointers to NULL
 	gst_clear_object(&udpsrc);
 	gst_clear_object(&rtpjpegdepay);
 	gst_clear_object(&tee_jpeg);
+	gst_clear_object(&publish_jpeg_pad);
 	gst_clear_object(&publish_jpeg_queue);
 	gst_clear_object(&publish_jpeg);
+	gst_clear_object(&record_jpegs_pad);
 	gst_clear_object(&record_jpegs_queue);
 	gst_clear_object(&record_jpegs);
+	gst_clear_object(&record_mjpeg_pad);
 	gst_clear_object(&record_mjpeg_queue);
 	gst_clear_object(&record_mjpeg_mux);
 	gst_clear_object(&record_mjpeg);
+	gst_clear_object(&jpegdec_pad);
 	gst_clear_object(&jpegdec_queue);
 	gst_clear_object(&jpegdec);
 	gst_clear_object(&tee_yuv);
+	gst_clear_object(&publish_yuv_pad);
 	gst_clear_object(&publish_yuv_queue);
 	gst_clear_object(&publish_yuv);
+	gst_clear_object(&publish_rgb_pad);
 	gst_clear_object(&publish_rgb_queue);
 	gst_clear_object(&publish_rgb_convert);
 	gst_clear_object(&publish_rgb);
+	gst_clear_object(&record_h264_pad);
 	gst_clear_object(&record_h264_queue);
 	gst_clear_object(&record_h264_enc);
 	gst_clear_object(&record_h264_mux);
 	gst_clear_object(&record_h264);
+	gst_clear_object(&preview_pad);
 	gst_clear_object(&preview_queue);
 	gst_clear_object(&preview);
 }
 
-// Quit main loop callback
-bool PepperCamera::quit_main_loop_callback(GMainLoop* main_loop)
-{
-	// Quit the main loop
-	ROS_INFO("Quitting main loop...");
-	g_main_loop_quit(main_loop);
+//
+// GStreamer callbacks
+//
 
-	// Keep the source of this callback
-	return TRUE;
+// GStreamer SIGINT callback
+gboolean PepperCamera::sigint_callback(PepperCamera* pc)
+{
+	// Display that SIGINT signal was caught
+	ROS_INFO("Caught SIGINT signal");
+
+	// Cancel the main loop
+	pc->cancel_main_loop();
+
+	// Keep the signal handler in place
+	return G_SOURCE_CONTINUE;
 }
 
-// GStreamer error callback
-void PepperCamera::stream_error_callback(GstBus* bus, GstMessage* msg, GMainLoop* main_loop)
+// GStreamer EOS callback
+void PepperCamera::stream_eos_callback(GstBus* bus, GstMessage* msg, PepperCamera* pc)
+{
+	// Display that end of stream (EOS) has occurred
+	ROS_INFO("End of stream (EOS) occurred");
+
+	// Quit the main loop
+	pc->quit_main_loop();
+}
+
+// GStreamer warning callback
+void PepperCamera::stream_warning_callback(GstBus* bus, GstMessage* msg, PepperCamera* pc)
 {
 	// Declare variables
 	GError *err;
-	gchar *debug_info;
+	gchar *debug;
+
+	// Print warning details to the screen
+	gst_message_parse_warning(msg, &err, &debug);
+	ROS_WARN("Warning received from element %s: %s\nDebugging information: %s", GST_OBJECT_NAME(msg->src), err->message, (debug ? debug : "None"));
+	g_clear_error(&err);
+	g_free(debug);
+}
+
+// GStreamer error callback
+void PepperCamera::stream_error_callback(GstBus* bus, GstMessage* msg, PepperCamera* pc)
+{
+	// Declare variables
+	GError *err;
+	gchar *debug;
 
 	// Print error details to the screen
-	gst_message_parse_error(msg, &err, &debug_info);
-	ROS_ERROR("Error received from element %s: %s\nDebugging information: %s", GST_OBJECT_NAME(msg->src), err->message, (debug_info ? debug_info : "None"));
+	gst_message_parse_error(msg, &err, &debug);
+	ROS_ERROR("Error received from element %s: %s\nDebugging information: %s", GST_OBJECT_NAME(msg->src), err->message, (debug ? debug : "None"));
 	g_clear_error(&err);
-	g_free(debug_info);
+	g_free(debug);
 
-	// Quit the main loop
-	g_main_loop_quit(main_loop);
+	// Cancel the main loop
+	pc->cancel_main_loop();
+}
+
+// Queue overrun callback
+void PepperCamera::queue_overrun_callback(GstElement* queue, PepperCamera* pc)
+{
+	// Store that an overrun occurred
+	pc->m_queue_overrun = true;
+
+	// Retrieve the current queue levels
+	guint64 cur_time = 0LU;
+	guint cur_buffers = 0U, cur_bytes = 0U;
+	g_object_get(queue, "current-level-buffers", &cur_buffers, "current-level-bytes", &cur_bytes, "current-level-time", &cur_time, NULL);
+
+	// Display that a queue overrun has occurred
+	ROS_WARN("Queue overrun of %s: Contains %u buffers, %.1fMB, %.3fs", GST_OBJECT_NAME(queue), cur_buffers, cur_bytes / 1048576.0, cur_time * 1e-9);
 }
 
 // New JPEG image sample callback
@@ -518,7 +633,7 @@ GstFlowReturn PepperCamera::publish_rgb_callback(GstElement* appsink, PepperCame
 		return GST_FLOW_ERROR;
 
 	// TODO
-	GstBuffer* buffer = gst_sample_get_buffer(sample);
+	GstBuffer* buffer = gst_sample_get_buffer(sample);  // TODO: unref buffers? Free them somehow?
 	if(buffer == NULL)
 		return GST_FLOW_ERROR;
 
@@ -539,17 +654,41 @@ GstFlowReturn PepperCamera::publish_rgb_callback(GstElement* appsink, PepperCame
 	return GST_FLOW_OK;
 }
 
-// Ensure a string ends with a particular extension (if it is not empty)
-bool PepperCamera::ensure_extension(std::string& str, const std::string& ext)
+//
+// GStreamer utilities
+//
+
+// Configure a queue in the standard way
+void PepperCamera::configure_queue(GstElement* queue)
 {
-	// Append extension if required and return whether the extension was added
-	if(str.empty() || (str.length() >= ext.length() && std::equal(ext.begin(), ext.end(), str.end() - ext.length())))
-		return false;
-	else
-	{
-		str.append(ext);
-		return true;
-	}
+	// Do nothing if no queue was provided
+	if(!queue)
+		return;
+
+	// Enable only a byte limit on the queue
+	g_object_set(queue, "max-size-buffers", (guint) 0U, "max-size-bytes", (guint) 31457280U, "max-size-time", (guint64) 0LU, NULL);  // TODO: Make 30MB a ROS param
+
+	// Handle queue overrun
+	g_signal_connect(queue, "overrun", G_CALLBACK(PepperCamera::queue_overrun_callback), this);
+}
+
+// Link a tee element to a particular queue (if tee_pad is not NULL after calling then you need to release and unref it, whether the return value is TRUE or FALSE)
+gboolean PepperCamera::link_tee_queue(GstElement* tee, GstElement* queue, GstPad*& tee_pad)
+{
+	// Create a src request pad on the tee element
+	tee_pad = gst_element_get_request_pad(tee, "src_%u");
+	if(!tee_pad)
+		return FALSE;
+
+	// Retrieve the sink pad on the queue element
+	GstPad* queue_pad = gst_element_get_static_pad(queue, "sink");
+	if(!queue_pad)
+		return FALSE;
+
+	// Link the two pads
+	gboolean link_success = (gst_pad_link(tee_pad, queue_pad) == GST_PAD_LINK_OK ? TRUE : FALSE);
+	gst_object_unref(queue_pad);
+	return link_success;
 }
 
 // Add a GStreamer element to a bin while keeping a reference to it
@@ -574,5 +713,53 @@ void PepperCamera::gst_bin_add_many_ref(GstBin *bin, GstElement *element1, ...)
 		element1 = va_arg(args, GstElement*);
 	}
 	va_end(args);
+}
+
+// Cancel the main loop
+void PepperCamera::cancel_main_loop()
+{
+	// Cancel the main loop if it is running
+	if(m_pipeline != NULL && m_main_loop != NULL && g_main_loop_is_running(m_main_loop) && !m_queue_overrun)
+	{
+		GstState current_state = GST_STATE_NULL, pending_state = GST_STATE_NULL;
+		gst_element_get_state(m_pipeline, &current_state, &pending_state, 0U);
+		if(current_state == GST_STATE_PLAYING || pending_state == GST_STATE_PLAYING)
+		{
+			ROS_INFO("Cancelling GStreamer main loop...");
+			if(gst_element_send_event(m_pipeline, gst_event_new_eos()))
+				return;
+		}
+	}
+
+	// Fall back to quitting the main loop
+	quit_main_loop();
+}
+
+// Quit main loop
+void PepperCamera::quit_main_loop()
+{
+	// Quit the main loop if it exists
+	if(m_main_loop != NULL)
+	{
+		ROS_INFO("Quitting GStreamer main loop...");
+		g_main_loop_quit(m_main_loop);
+	}
+}
+
+//
+// Misc utilities
+//
+
+// Ensure a string ends with a particular extension (if it is not empty)
+bool PepperCamera::ensure_extension(std::string& str, const std::string& ext)
+{
+	// Append extension if required and return whether the extension was added
+	if(str.empty() || (str.length() >= ext.length() && std::equal(ext.begin(), ext.end(), str.end() - ext.length())))
+		return false;
+	else
+	{
+		str.append(ext);
+		return true;
+	}
 }
 // EOF
