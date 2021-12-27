@@ -230,7 +230,7 @@ bool PepperCamera::init_stream()
 	if(m_elem->record_jpegs)
 	{
 		configure_queue(m_elem->record_jpegs_queue);
-		g_object_set(m_elem->record_jpegs, "location", m_record_jpegs.c_str(), "max-files", (guint) std::max(m_record_jpegs_max, 0), "sync", FALSE, NULL);
+		g_object_set(m_elem->record_jpegs, "location", m_record_jpegs.c_str(), "index", (gint) 1, "max-files", (guint) std::max(m_record_jpegs_max, 0), "sync", FALSE, NULL);
 		gst_bin_add_many_ref(pipeline_bin, m_elem->record_jpegs, m_elem->record_jpegs_queue, NULL);
 	}
 
