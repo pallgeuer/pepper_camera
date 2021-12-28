@@ -609,6 +609,7 @@ void PepperCamera::queue_overrun_callback(GstElement* queue, PepperCamera* pc)
 
 	// Display that a queue overrun has occurred
 	ROS_WARN("Queue overrun of %s: Contains %u buffers, %.1fMB, %.3fs", GST_OBJECT_NAME(queue), cur_buffers, cur_bytes / 1048576.0, cur_time * 1e-9);
+	ROS_WARN("Try increasing the queue MB limit?");
 }
 
 // New JPEG image sample callback
@@ -626,32 +627,93 @@ GstFlowReturn PepperCamera::publish_yuv_callback(GstElement* appsink, PepperCame
 // New RGB image sample callback
 GstFlowReturn PepperCamera::publish_rgb_callback(GstElement* appsink, PepperCamera* pc)
 {
-	// Retrieve the sample
+	// Declare variables
+	GstFlowReturn flow = GST_FLOW_ERROR;
+
+	// Retrieve and process the sample
 	GstSample* sample;
 	g_signal_emit_by_name(appsink, "pull-sample", &sample);
 	if(!sample)
-		return GST_FLOW_ERROR;
+		ROS_ERROR("RGB publisher failed to pull a sample");
+	else
+	{
+		// Retrieve and process the sample buffer
+		GstBuffer* buffer = gst_sample_get_buffer(sample);
+		GstCaps* caps = gst_sample_get_caps(sample);
+		if(!buffer)
+			ROS_ERROR("RGB publisher failed to obtain the buffer for a pulled sample");
+		else if(!caps)
+			ROS_ERROR("RGB publisher failed to obtain the caps for a pulled sample");
+		else
+		{
+			// Retrieve and process the sample buffer memory
+			guint num_memories = gst_buffer_n_memory(buffer);
+			guint num_caps_structs = gst_caps_get_size(caps);
+			if(num_memories < 1U)
+				ROS_ERROR("RGB publisher received a buffer with no memory");
+			else if(num_caps_structs < 1U)
+				ROS_ERROR("RGB publisher received a caps with no structures");
+			else
+			{
+				// One-time warnings for silently ignored memories/structures
+				if(num_memories != 1U)
+					ROS_WARN_ONCE("RGB publisher is receiving buffers with multiple memories in it => Always just taking first one");
+				if(num_caps_structs != 1U)
+					ROS_WARN_ONCE("RGB publisher is receiving caps with multiple structures in it => Always just taking first one");
 
-	// TODO
-	GstBuffer* buffer = gst_sample_get_buffer(sample);  // TODO: unref buffers? Free them somehow?
-	if(buffer == NULL)
-		return GST_FLOW_ERROR;
+				// Retrieve and process the raw data inside the sample buffer memory
+				GstMemory *memory = gst_buffer_peek_memory(buffer, 0U);
+				GstStructure* caps_struct = gst_caps_get_structure(caps, 0U);
+				gint caps_width = 0, caps_height = 0;
+				const gchar* caps_format = NULL;
+				GstMapInfo memory_info;
+				if(!memory)
+					ROS_ERROR("RGB publisher failed to get a pointer to the sample buffer memory");
+				else if(!caps_struct)
+					ROS_ERROR("RGB publisher failed to get the internal caps structure");
+				else if(!gst_memory_map(memory, &memory_info, GST_MAP_READ))
+					ROS_ERROR("RGB publisher failed to extract the raw data from the sample buffer memory");
+				else if(!gst_structure_get_int(caps_struct, "width", &caps_width) || !gst_structure_get_int(caps_struct, "height", &caps_height) || caps_width < 1 || caps_height < 1)
+					ROS_ERROR("RGB publisher failed to determine the sample image dimensions from the caps");
+				else if(!(caps_format = gst_structure_get_string(caps_struct, "format")))
+					ROS_ERROR("RGB publisher failed to determine the sample image format from the caps");
+				else
+				{
+					// Retrieve the raw data pointer and size
+					gsize& data_size = memory_info.size;
+					guint8*& data_ptr = memory_info.data;
+					double data_pts = buffer->pts * 1e-9;
 
-	// TODO: gst_sample_get_info() What is in there?
+					// Display info about the data that the ROS publisher is receiving
+					static gint cur_caps_width = 0, cur_caps_height = 0;
+					static std::string cur_caps_format;
+					static gsize cur_data_size = 0U;
+					if(cur_caps_width != caps_width || cur_caps_height != caps_height || cur_caps_format != caps_format || cur_data_size != data_size)
+					{
+						cur_caps_width = caps_width;
+						cur_caps_height = caps_height;
+						cur_caps_format = caps_format;
+						cur_data_size = data_size;
+						ROS_INFO("RGB publisher: Receiving %dx%d %s images (%" G_GSIZE_FORMAT " bytes)", cur_caps_width, cur_caps_height, cur_caps_format.c_str(), cur_data_size);
+					}
 
-	GstMemory *memory = gst_buffer_get_memory(buffer, 0);
-	GstMapInfo info;
-	gst_memory_map(memory, &info, GST_MAP_READ);
-	gsize &buf_size = info.size;
-	guint8* &buf_data = info.data;
-	GstClockTime bt = gst_element_get_base_time(pc->m_pipeline);  // TODO: What time does this give? Any relevance?
-	ROS_INFO("Got %u bytes at address %p: PTS %.9f", (unsigned int) buf_size, (void *) buf_data, buffer->pts * 1e-9);
+					// TODO: ROS publish
 
-	// Free the sample
-	gst_sample_unref(sample);
+					// Set that the data flow is okay
+					flow = GST_FLOW_OK;
 
-	// Return that the data flow is okay
-	return GST_FLOW_OK;
+					// Unmap the sample buffer memory
+					gst_memory_unmap(memory, &memory_info);
+				}
+			}
+		}
+
+		// Free the sample
+		gst_sample_unref(sample);
+	}
+
+	// Return the data flow state
+	return flow;
 }
 
 //
