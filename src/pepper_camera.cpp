@@ -3,6 +3,8 @@
 
 // Includes
 #include <pepper_camera/pepper_camera.h>
+#include <sensor_msgs/image_encodings.h>
+#include <sensor_msgs/Image.h>
 #include <glib-unix.h>
 #include <algorithm>
 #include <thread>
@@ -18,7 +20,9 @@ using namespace pepper_camera;
 // Constructor
 PepperCamera::PepperCamera(const ros::NodeHandle& nh_interface, const ros::NodeHandle& nh_param) :
 	m_nh_interface(nh_interface),
-	m_nh_param(nh_param)
+	m_nh_param(nh_param),
+	m_camera_info_manager(m_nh_interface),
+	m_image_transport(m_nh_interface)
 {
 	// Reset the configuration variables
 	reset_config();
@@ -84,6 +88,11 @@ void PepperCamera::reset_config()
 	m_record_h264_speed = 5;                         // Allowed values: gst-inspect-1.0 x264enc | grep 'speed-preset' -A 15
 	m_record_h264_profile = "constrained-baseline";  // Allowed values: gst-inspect-1.0 x264enc | grep 'profile:'
 	m_preview = false;                               // Whether to show a preview window
+	m_camera_name.clear();                           // Camera name to use (e.g. for topics, camera info manager)
+	m_camera_frame.clear();                          // Camera TF frame (e.g. /camera_top)
+	m_camera_info_url.clear();                       // URL specifying the camera info file to load (see https://docs.ros.org/en/api/camera_info_manager/html/classcamera__info__manager_1_1CameraInfoManager.html)
+	m_time_offset = 0.0;                             // Fixed time offset to apply to the camera frame timestamps (+/- seconds)
+	m_queue_size_mb = 30;                            // Queue byte sizes to use (MB)
 }
 
 // Configure the Pepper camera loop
@@ -92,11 +101,44 @@ bool PepperCamera::configure()
 	// Reset the current configuration to default values
 	reset_config();
 
-	// TODO: Set configuration variables based on ROS params and the like
-	// TODO: Integrate into whatever code comes into this function
+	// Customise configuration variables based on ROS parameters
+	m_nh_param.getParam("port", m_port);
+	m_nh_param.getParam("auto_retry", m_auto_retry);
+	m_nh_param.getParam("publish_jpeg", m_publish_jpeg);
+	m_nh_param.getParam("publish_yuv", m_publish_yuv);
+	m_nh_param.getParam("publish_rgb", m_publish_rgb);
+	m_nh_param.getParam("record_jpegs_path", m_record_jpegs);
+	m_nh_param.getParam("record_jpegs_max", m_record_jpegs_max);
+	m_nh_param.getParam("record_mjpeg_path", m_record_mjpeg);
+	m_nh_param.getParam("record_h264_path", m_record_h264);
+	m_nh_param.getParam("record_h264_bitrate", m_record_h264_bitrate);
+	m_nh_param.getParam("record_h264_speed", m_record_h264_speed);
+	m_nh_param.getParam("record_h264_profile", m_record_h264_profile);
+	m_nh_param.getParam("preview", m_preview);
+	m_nh_param.getParam("camera_name", m_camera_name);
+	m_nh_param.getParam("camera_frame", m_camera_frame);
+	m_nh_param.getParam("camera_info_url", m_camera_info_url);
+	m_nh_param.getParam("time_offset", m_time_offset);
+	m_nh_param.getParam("queue_size_mb", m_queue_size_mb);
+
+	// Ensure the recording paths have the appropriate extension
 	ensure_extension(m_record_jpegs, ".jpg");
 	ensure_extension(m_record_mjpeg, ".mkv");
 	ensure_extension(m_record_h264, ".mkv");
+
+	// Dynamic default values
+	if(m_camera_name.empty())
+		m_camera_name = "main";
+	if(m_camera_frame.empty())
+		m_camera_frame = "/camera_" + m_camera_name;
+
+	// Initialise the camera info manager
+	m_camera_info_manager.setCameraName(m_camera_name);
+	if(!m_camera_info_url.empty() && m_camera_info_manager.validateURL(m_camera_info_url))
+	{
+		m_camera_info_manager.loadCameraInfo(m_camera_info_url);
+		ROS_INFO("Loaded camera calibration info from %s", m_camera_info_url.c_str());
+	}
 
 	// Return success
 	return true;
@@ -111,14 +153,6 @@ bool PepperCamera::init_stream()
 {
 	// Print that the stream is being initialised
 	ROS_INFO("Initialising Pepper camera stream...");
-
-	// Initialise the GStreamer library
-	if(!gst_is_initialized())
-	{
-		ROS_INFO("Initialising GStreamer library...");
-		gst_init(0, NULL);
-		ROS_INFO("Loaded %s", gst_version_string());
-	}
 
 	// Flags whether certain parts of the pipeline are required
 	bool record_jpegs = !m_record_jpegs.empty();
@@ -135,6 +169,18 @@ bool PepperCamera::init_stream()
 	{
 		ROS_WARN("No sinks have been configured for the streaming pipeline => Nothing to do");
 		return false;
+	}
+
+	// Advertise ROS interface
+	std::string camera_topic_base = "camera/" + m_camera_name;
+	m_pub_rgb = m_image_transport.advertiseCamera(camera_topic_base + "/rgb", 3);
+
+	// Initialise the GStreamer library
+	if(!gst_is_initialized())
+	{
+		ROS_INFO("Initialising GStreamer library...");
+		gst_init(0, NULL);
+		ROS_INFO("Loaded %s", gst_version_string());
 	}
 
 	// Create the required pipeline elements
@@ -257,7 +303,7 @@ bool PepperCamera::init_stream()
 	if(m_elem->publish_yuv)
 	{
 		configure_queue(m_elem->publish_yuv_queue);
-		GstCaps* publish_yuv_caps = gst_caps_new_simple("video/x-raw", "format", G_TYPE_STRING, "I420", NULL);
+		GstCaps* publish_yuv_caps = gst_caps_new_simple("video/x-raw", "format", G_TYPE_STRING, "I420", NULL);  // TODO: Want another YUV format compatible with ROS?
 		g_object_set(m_elem->publish_yuv, "caps", publish_yuv_caps, "emit-signals", TRUE, "sync", FALSE, NULL);
 		gst_caps_unref(publish_yuv_caps);
 		g_signal_connect(m_elem->publish_yuv, "new-sample", G_CALLBACK(PepperCamera::publish_yuv_callback), this);
@@ -418,6 +464,14 @@ bool PepperCamera::init_stream()
 	m_sigint_callback_id = g_unix_signal_add(SIGINT, G_SOURCE_FUNC(PepperCamera::sigint_callback), this);
 	ROS_INFO("Added GStreamer SIGINT handler");
 
+	// GStreamer and ROS time calibration
+	GstClock* pipeline_clock = gst_pipeline_get_clock(GST_PIPELINE_CAST(m_pipeline));
+	GstClockTime pipeline_now_a = gst_clock_get_time(pipeline_clock);
+	ros::Time ros_now = ros::Time::now();
+	GstClockTime pipeline_now_b = gst_clock_get_time(pipeline_clock);
+	m_pipeline_time_offset.fromSec(ros_now.toSec() - (pipeline_now_a + pipeline_now_b) / (2.0 * GST_SECOND));
+	gst_object_unref(pipeline_clock);
+
 	// Return success
 	return true;
 }
@@ -478,6 +532,9 @@ void PepperCamera::cleanup_stream()
 		delete m_elem;
 		m_elem = NULL;
 	}
+
+	// Shut down ROS interface
+	m_pub_rgb.shutdown();
 }
 
 //
@@ -609,7 +666,7 @@ void PepperCamera::queue_overrun_callback(GstElement* queue, PepperCamera* pc)
 
 	// Display that a queue overrun has occurred
 	ROS_WARN("Queue overrun of %s: Contains %u buffers, %.1fMB, %.3fs", GST_OBJECT_NAME(queue), cur_buffers, cur_bytes / 1048576.0, cur_time * 1e-9);
-	ROS_WARN("Try increasing the queue MB limit?");
+	ROS_WARN("Try increasing the queue MB limit using queue_size_mb ROS param?");
 }
 
 // New JPEG image sample callback
@@ -682,7 +739,6 @@ GstFlowReturn PepperCamera::publish_rgb_callback(GstElement* appsink, PepperCame
 					// Retrieve the raw data pointer and size
 					gsize& data_size = memory_info.size;
 					guint8*& data_ptr = memory_info.data;
-					double data_pts = buffer->pts * 1e-9;
 
 					// Display info about the data that the ROS publisher is receiving
 					static gint cur_caps_width = 0, cur_caps_height = 0;
@@ -694,13 +750,38 @@ GstFlowReturn PepperCamera::publish_rgb_callback(GstElement* appsink, PepperCame
 						cur_caps_height = caps_height;
 						cur_caps_format = caps_format;
 						cur_data_size = data_size;
-						ROS_INFO("RGB publisher: Receiving %dx%d %s images (%" G_GSIZE_FORMAT " bytes)", cur_caps_width, cur_caps_height, cur_caps_format.c_str(), cur_data_size);
+						ROS_INFO("RGB publisher is receiving %dx%d %s images (%" G_GSIZE_FORMAT " bytes)", cur_caps_width, cur_caps_height, cur_caps_format.c_str(), cur_data_size);
 					}
 
-					// TODO: ROS publish
+					// Ensure the data size is as expected
+					gsize cur_row_size = cur_caps_width * 3U;
+					gsize exp_data_size =  cur_caps_height * cur_row_size;
+					if(cur_data_size != exp_data_size)
+						ROS_ERROR("RGB publisher received unexpected number of image bytes: %" G_GSIZE_FORMAT " (received) vs %" G_GSIZE_FORMAT " (expected)", cur_data_size, exp_data_size);
+					else
+					{
+						// Construct image message
+						sensor_msgs::ImagePtr image(new sensor_msgs::Image());
+						image->header.frame_id = pc->m_camera_frame;
+						image->header.stamp.fromSec((pc->m_pipeline->base_time + buffer->pts) * 1e-9 + pc->m_pipeline_time_offset.toSec() + pc->m_time_offset);
+						image->width = cur_caps_width;
+						image->height = cur_caps_height;
+						image->encoding = sensor_msgs::image_encodings::RGB8;
+						image->is_bigendian = false;
+						image->step = cur_row_size;
+						image->data.insert(image->data.end(), data_ptr, data_ptr + exp_data_size);
 
-					// Set that the data flow is okay
-					flow = GST_FLOW_OK;
+						// Construct camera info message
+						sensor_msgs::CameraInfoPtr camera_info(new sensor_msgs::CameraInfo(pc->m_camera_info_manager.getCameraInfo()));
+						camera_info->header.frame_id = image->header.frame_id;
+						camera_info->header.stamp = image->header.stamp;
+
+						// Publish the image and camera info
+						pc->m_pub_rgb.publish(image, camera_info);
+
+						// Signal that the data flow is okay
+						flow = GST_FLOW_OK;
+					}
 
 					// Unmap the sample buffer memory
 					gst_memory_unmap(memory, &memory_info);
@@ -728,7 +809,7 @@ void PepperCamera::configure_queue(GstElement* queue)
 		return;
 
 	// Enable only a byte limit on the queue
-	g_object_set(queue, "max-size-buffers", (guint) 0U, "max-size-bytes", (guint) 31457280U, "max-size-time", (guint64) 0LU, NULL);  // TODO: Make 30MB a ROS param
+	g_object_set(queue, "max-size-buffers", (guint) 0U, "max-size-bytes", (guint) (std::max(m_queue_size_mb, 1) * 1048576U), "max-size-time", (guint64) 0LU, NULL);
 
 	// Handle queue overrun
 	g_signal_connect(queue, "overrun", G_CALLBACK(PepperCamera::queue_overrun_callback), this);

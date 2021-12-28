@@ -3,6 +3,7 @@ project(pepper_camera)
 
 find_package(catkin REQUIRED COMPONENTS
 	roscpp
+	camera_info_manager
 	image_transport
 	sensor_msgs
 )

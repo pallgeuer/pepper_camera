@@ -7,6 +7,8 @@
 
 // Includes - ROS
 #include <ros/ros.h>
+#include <image_transport/image_transport.h>
+#include <camera_info_manager/camera_info_manager.h>
 
 // Includes - GStreamer
 extern "C"
@@ -37,10 +39,6 @@ namespace pepper_camera
 		void cleanup_stream();
 
 	private:
-		// ROS node handles
-		const ros::NodeHandle& m_nh_interface;
-		const ros::NodeHandle& m_nh_param;
-
 		// Configuration
 		int m_port;
 		bool m_auto_retry;
@@ -55,6 +53,19 @@ namespace pepper_camera
 		int m_record_h264_speed;
 		std::string m_record_h264_profile;
 		bool m_preview;
+		std::string m_camera_name;
+		std::string m_camera_frame;
+		std::string m_camera_info_url;
+		double m_time_offset;
+		int m_queue_size_mb;
+
+		// ROS variables
+		const ros::NodeHandle& m_nh_interface;
+		const ros::NodeHandle& m_nh_param;
+		ros::Time m_pipeline_time_offset;
+		camera_info_manager::CameraInfoManager m_camera_info_manager;
+		image_transport::ImageTransport m_image_transport;
+		image_transport::CameraPublisher m_pub_rgb;
 
 		// GStreamer pipeline elements class
 		class GSElements {
