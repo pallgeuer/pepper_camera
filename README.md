@@ -50,6 +50,12 @@ If you're not getting the framerate you expect, you can check the current WiFi c
 iw dev wlan0 link
 ```
 
+You can check the capabilities of a camera (doesn't seem to work so well on the Pepper) using:
+```sh
+v4l2-ctl --list-formats-ext
+v4l2-ctl --device=/dev/video0 --all  # <-- Note that this displays sticky information from the last configured use of the camera
+```
+
 You can run the Pepper camera node using:
 ```sh
 source PATH/TO/pepper_ros_ws/devel/setup.bash
