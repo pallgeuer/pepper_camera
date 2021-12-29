@@ -9,6 +9,7 @@
 #include <sensor_msgs/Image.h>
 #include <glib-unix.h>
 #include <algorithm>
+#include <sstream>
 #include <thread>
 #include <chrono>
 
@@ -172,13 +173,7 @@ bool PepperCamera::init_stream()
 	bool have_jpegdec = (tee_yuv_count >= 1);
 	int tee_jpeg_count = m_publish_jpeg + record_jpegs + record_mjpeg + have_jpegdec;
 	bool have_tee_jpeg = (tee_jpeg_count >= 2);
-
-	// Check that at least one sink is configured
-	if(tee_jpeg_count < 1)
-	{
-		ROS_WARN("No sinks have been configured for the streaming pipeline => Nothing to do");
-		return false;
-	}
+	bool have_inspect = (tee_jpeg_count < 1);
 
 	// Advertise ROS interface
 	std::string camera_topic_base = "camera/" + m_camera_name;
@@ -257,6 +252,8 @@ bool PepperCamera::init_stream()
 	}
 	if(m_preview)
 		any_elem_invalid |= !(m_elem->preview = gst_element_factory_make("fpsdisplaysink", "preview"));
+	if(have_inspect)
+		any_elem_invalid |= !(m_elem->inspect = gst_element_factory_make("fakesink", "inspect"));
 
 	// Abort if not all pipeline elements were created successfully
 	if(any_elem_invalid)
@@ -357,6 +354,14 @@ bool PepperCamera::init_stream()
 		gst_bin_add_many_ref(pipeline_bin, m_elem->preview, m_elem->preview_queue, NULL);
 	}
 
+	// Configure/add the inspect sink
+	if(m_elem->inspect)
+	{
+		g_object_set(m_elem->inspect, "signal-handoffs", TRUE, "sync", FALSE, NULL);
+		g_signal_connect(m_elem->inspect, "handoff", G_CALLBACK(PepperCamera::inspect_callback), this);
+		gst_bin_add_ref(pipeline_bin, m_elem->inspect);
+	}
+
 	// Display selected configuration information
 	ROS_INFO_COND(m_elem->tee_jpeg || m_elem->tee_yuv, "Configured a GStreamer queue size of %dMB", m_queue_size_mb);
 
@@ -385,6 +390,8 @@ bool PepperCamera::init_stream()
 		link_success &= gst_element_link(m_elem->rtpjpegdepay, m_elem->record_mjpeg_mux);
 	else if(m_elem->jpegdec)
 		link_success &= gst_element_link(m_elem->rtpjpegdepay, m_elem->jpegdec);
+	else if(m_elem->inspect)
+		link_success &= gst_element_link(m_elem->rtpjpegdepay, m_elem->inspect);
 	else
 	{
 		ROS_ERROR("Failed to link src pad of element: rtpjpegdepay");
@@ -526,6 +533,7 @@ bool PepperCamera::run_stream()
 	}
 
 	// Run the main loop
+	ROS_INFO("Waiting for UDP data to arrive...");
 	g_main_loop_run(m_main_loop);
 
 	// Return success
@@ -650,6 +658,7 @@ void pepper_camera::PepperCamera::GSElements::clear()
 	gst_object_unref_safe((GstObject**) &preview_pad);
 	gst_object_unref_safe((GstObject**) &preview_queue);
 	gst_object_unref_safe((GstObject**) &preview);
+	gst_object_unref_safe((GstObject**) &inspect);
 }
 
 //
@@ -804,7 +813,7 @@ GstFlowReturn PepperCamera::publish_callback(GstElement* appsink, PublishImageTy
 						{
 							cur_caps_width = caps_width;
 							cur_caps_height = caps_height;
-							ROS_INFO("JPEG publisher is receiving %dx%d JPEG images (~%" G_GSIZE_FORMAT " bytes)", cur_caps_width, cur_caps_height, 1000 * ((data_size + 500) / 1000));
+							ROS_INFO("JPEG publisher is receiving %dx%d JPEG images (~%" G_GSIZE_FORMAT " bytes)", cur_caps_width, cur_caps_height, 1000U * ((data_size + 500U) / 1000U));
 						}
 
 						// Publish an image message
@@ -914,6 +923,65 @@ GstFlowReturn PepperCamera::publish_callback(GstElement* appsink, PublishImageTy
 	return flow;
 }
 
+// Inspect stream data callback
+void PepperCamera::inspect_callback(GstElement* fakesink, GstBuffer* buffer, GstPad* pad, PepperCamera* pc)
+{
+	// Summarise the data being captured by the fake sink
+	GstCaps* caps = gst_pad_get_current_caps(pad);
+	if(!caps)
+		ROS_ERROR("Stream inspector failed to obtain the data caps");
+	else
+	{
+		guint num_memories = gst_buffer_n_memory(buffer);
+		guint num_caps_structs = gst_caps_get_size(caps);
+		if(num_memories < 1U)
+			ROS_ERROR("Stream inspector received a buffer with no memory");
+		else if(num_caps_structs < 1U)
+			ROS_ERROR("Stream inspector received a caps with no structures");
+		else
+		{
+			if(num_memories != 1U)
+				ROS_WARN_ONCE("Stream inspector is receiving buffers with multiple memories in it => Always just taking first one");
+			if(num_caps_structs != 1U)
+				ROS_WARN_ONCE("Stream inspector is receiving caps with multiple structures in it => Always just taking first one");
+			GstMemory *memory = gst_buffer_peek_memory(buffer, 0U);
+			GstStructure* caps_struct = gst_caps_get_structure(caps, 0U);
+			gint caps_width = 0, caps_height = 0;
+			const gchar* caps_type = NULL;
+			if(!memory)
+				ROS_ERROR("Stream inspector failed to get a pointer to the buffer memory");
+			else if(!caps_struct)
+				ROS_ERROR("Stream inspector failed to get the internal caps structure");
+			else if(!(caps_type = gst_structure_get_name(caps_struct)))
+				ROS_ERROR("Stream inspector failed to determine the data format from the caps");
+			else
+			{
+				// Retrieve selected information about the stream
+				gst_structure_get_int(caps_struct, "width", &caps_width);
+				gst_structure_get_int(caps_struct, "height", &caps_height);
+				gsize data_size = gst_memory_get_sizes(memory, NULL, NULL);
+
+				// Display the stream information
+				static std::string cur_caps_type;
+				static gint cur_caps_width = 0, cur_caps_height = 0;
+				if(cur_caps_type != caps_type || cur_caps_width != caps_width || cur_caps_height != caps_height)
+				{
+					cur_caps_type = caps_type;
+					cur_caps_width = caps_width;
+					cur_caps_height = caps_height;
+					std::ostringstream os;
+					os << "Receiving '" << cur_caps_type << "' data";
+					if(caps_width >= 1 && caps_height >= 1)
+						os << " of resolution " << caps_width << 'x' << caps_height;
+					os << " (~" << 1000U * ((data_size + 500U) / 1000U) << " bytes), but no output is configured so nothing to do...";
+					ROS_INFO_STREAM(os.str());
+				}
+			}
+		}
+		gst_caps_unref(caps);
+	}
+}
+
 //
 // GStreamer utilities
 //
@@ -955,7 +1023,7 @@ gboolean PepperCamera::link_tee_queue(GstElement* tee, GstElement* queue, GstPad
 gboolean PepperCamera::gst_bin_add_ref(GstBin *bin, GstElement *element)
 {
 	// Generate a new reference then let the bin take your original one
-	g_object_ref(element);
+	gst_object_ref(element);
 	return gst_bin_add(bin, element);
 }
 

@@ -115,6 +115,7 @@ namespace pepper_camera
 			GstPad*     preview_pad;
 			GstElement* preview_queue;
 			GstElement* preview;
+			GstElement* inspect;
 		};
 
 		// Publish image type enumeration
@@ -142,6 +143,7 @@ namespace pepper_camera
 		static GstFlowReturn publish_jpeg_callback(GstElement* appsink, PepperCamera* pc) { return pc->publish_callback(appsink, PIT_JPEG, "JPEG"); }
 		static GstFlowReturn publish_yuv_callback(GstElement* appsink, PepperCamera* pc) { return pc->publish_callback(appsink, PIT_YUV, "YUV"); }
 		static GstFlowReturn publish_rgb_callback(GstElement* appsink, PepperCamera* pc) { return pc->publish_callback(appsink, PIT_RGB, "RGB"); }
+		static void inspect_callback(GstElement* fakesink, GstBuffer* buffer, GstPad* pad, PepperCamera* pc);
 
 		// GStreamer utilities
 		void configure_queue(GstElement* queue);
