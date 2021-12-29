@@ -533,7 +533,6 @@ bool PepperCamera::run_stream()
 	}
 
 	// Run the main loop
-	ROS_INFO("Waiting for UDP data to arrive...");
 	g_main_loop_run(m_main_loop);
 
 	// Return success
