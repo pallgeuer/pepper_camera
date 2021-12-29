@@ -142,14 +142,6 @@ bool PepperCamera::configure()
 	if(m_camera_frame.empty())
 		m_camera_frame = "/camera_" + m_camera_name;
 
-	// Initialise the camera info manager
-	m_camera_info_manager.setCameraName(m_camera_name);
-	if(!m_camera_info_url.empty() && m_camera_info_manager.validateURL(m_camera_info_url))
-	{
-		m_camera_info_manager.loadCameraInfo(m_camera_info_url);
-		ROS_INFO("Loaded camera calibration info from %s", m_camera_info_url.c_str());
-	}
-
 	// Return success
 	return true;
 }
@@ -192,12 +184,19 @@ bool PepperCamera::init_stream()
 	std::string camera_topic_base = "camera/" + m_camera_name;
 	if(m_publish_jpeg || m_publish_yuv || m_publish_rgb)
 	{
+		m_camera_info_manager.setCameraName(m_camera_name);
+		std::string camera_info_url;
+		if(m_camera_info_manager.validateURL(m_camera_info_url))
+			camera_info_url = m_camera_info_url;
+		m_camera_info_manager.loadCameraInfo(m_camera_info_url);
+		if(!m_camera_info_url.empty())
+			ROS_INFO("Loaded camera calibration info from %s", m_camera_info_url.c_str());
 		m_pub_camera_info = m_nh_interface.advertise<sensor_msgs::CameraInfo>(camera_topic_base + "/camera_info", m_publish_queue_size);
 		ROS_INFO("Configured a ROS publisher queue length of %d", m_publish_queue_size);
 	}
 	m_pub_camera_info_stamp.fromNSec(0);
 	if(m_publish_jpeg)
-		m_pub_jpeg = m_nh_interface.advertise<sensor_msgs::CompressedImage>(camera_topic_base + "/jpeg", m_publish_queue_size);
+		m_pub_jpeg = m_nh_interface.advertise<sensor_msgs::CompressedImage>(camera_topic_base + "/jpeg/compressed", m_publish_queue_size);
 	if(m_publish_yuv)
 		m_pub_yuv = m_nh_interface.advertise<sensor_msgs::Image>(camera_topic_base + "/yuv", m_publish_queue_size);
 	if(m_publish_rgb)
@@ -790,9 +789,6 @@ GstFlowReturn PepperCamera::publish_jpeg_callback(GstElement* appsink, PepperCam
 					guint8*& data_ptr = memory_info.data;
 					ros::Time data_stamp((pc->m_pipeline->base_time + buffer->pts) * 1e-9 + pc->m_pipeline_time_offset.toSec() + pc->m_time_offset);
 
-					// Publish a camera info message
-					pc->publish_camera_info(data_stamp);
-
 					// Display info about the data that the ROS publisher is receiving
 					static gint cur_caps_width = 0, cur_caps_height = 0;
 					if(cur_caps_width != caps_width || cur_caps_height != caps_height)
@@ -809,6 +805,9 @@ GstFlowReturn PepperCamera::publish_jpeg_callback(GstElement* appsink, PepperCam
 					image->format = "jpeg";
 					image->data.insert(image->data.end(), data_ptr, data_ptr + data_size);
 					pc->m_pub_jpeg.publish(image);
+
+					// Publish a camera info message
+					pc->publish_camera_info(data_stamp);
 
 					// Signal that the data flow is okay
 					flow = GST_FLOW_OK;
@@ -887,9 +886,6 @@ GstFlowReturn PepperCamera::publish_yuv_callback(GstElement* appsink, PepperCame
 					guint8*& data_ptr = memory_info.data;
 					ros::Time data_stamp((pc->m_pipeline->base_time + buffer->pts) * 1e-9 + pc->m_pipeline_time_offset.toSec() + pc->m_time_offset);
 
-					// Publish a camera info message
-					pc->publish_camera_info(data_stamp);
-
 					// Display info about the data that the ROS publisher is receiving
 					static gint cur_caps_width = 0, cur_caps_height = 0;
 					static std::string cur_caps_format;
@@ -921,6 +917,9 @@ GstFlowReturn PepperCamera::publish_yuv_callback(GstElement* appsink, PepperCame
 						image->step = cur_row_size;
 						image->data.insert(image->data.end(), data_ptr, data_ptr + exp_data_size);
 						pc->m_pub_yuv.publish(image);
+
+						// Publish a camera info message
+						pc->publish_camera_info(data_stamp);
 
 						// Signal that the data flow is okay
 						flow = GST_FLOW_OK;
@@ -1000,9 +999,6 @@ GstFlowReturn PepperCamera::publish_rgb_callback(GstElement* appsink, PepperCame
 					guint8*& data_ptr = memory_info.data;
 					ros::Time data_stamp((pc->m_pipeline->base_time + buffer->pts) * 1e-9 + pc->m_pipeline_time_offset.toSec() + pc->m_time_offset);
 
-					// Publish a camera info message
-					pc->publish_camera_info(data_stamp);
-
 					// Display info about the data that the ROS publisher is receiving
 					static gint cur_caps_width = 0, cur_caps_height = 0;
 					static std::string cur_caps_format;
@@ -1034,6 +1030,9 @@ GstFlowReturn PepperCamera::publish_rgb_callback(GstElement* appsink, PepperCame
 						image->step = cur_row_size;
 						image->data.insert(image->data.end(), data_ptr, data_ptr + exp_data_size);
 						pc->m_pub_rgb.publish(image);
+
+						// Publish a camera info message
+						pc->publish_camera_info(data_stamp);
 
 						// Signal that the data flow is okay
 						flow = GST_FLOW_OK;
