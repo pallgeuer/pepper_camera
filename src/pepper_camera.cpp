@@ -4,6 +4,8 @@
 // Includes
 #include <pepper_camera/pepper_camera.h>
 #include <sensor_msgs/image_encodings.h>
+#include <sensor_msgs/CompressedImage.h>
+#include <sensor_msgs/CameraInfo.h>
 #include <sensor_msgs/Image.h>
 #include <glib-unix.h>
 #include <algorithm>
@@ -18,7 +20,7 @@ using namespace pepper_camera;
 //
 
 // Constructor
-PepperCamera::PepperCamera(const ros::NodeHandle& nh_interface, const ros::NodeHandle& nh_param) :
+PepperCamera::PepperCamera(ros::NodeHandle& nh_interface, ros::NodeHandle& nh_param) :
 	m_nh_interface(nh_interface),
 	m_nh_param(nh_param),
 	m_camera_info_manager(m_nh_interface),
@@ -93,6 +95,7 @@ void PepperCamera::reset_config()
 	m_camera_info_url.clear();                       // URL specifying the camera info file to load (see https://docs.ros.org/en/api/camera_info_manager/html/classcamera__info__manager_1_1CameraInfoManager.html)
 	m_time_offset = 0.0;                             // Fixed time offset to apply to the camera frame timestamps (+/- seconds)
 	m_queue_size_mb = 30;                            // Queue byte sizes to use (MB)
+	m_publish_queue_size = 3;                        // Queue size to use for the ROS publishers
 }
 
 // Configure the Pepper camera loop
@@ -120,15 +123,22 @@ bool PepperCamera::configure()
 	m_nh_param.getParam("camera_info_url", m_camera_info_url);
 	m_nh_param.getParam("time_offset", m_time_offset);
 	m_nh_param.getParam("queue_size_mb", m_queue_size_mb);
+	m_nh_param.getParam("publish_queue_size", m_publish_queue_size);
 
 	// Ensure the recording paths have the appropriate extension
 	ensure_extension(m_record_jpegs, ".jpg");
 	ensure_extension(m_record_mjpeg, ".mkv");
 	ensure_extension(m_record_h264, ".mkv");
 
+	// Range checking
+	m_record_jpegs_max = std::max(m_record_jpegs_max, 0);
+	m_record_h264_bitrate = std::max(m_record_h264_bitrate, 50);
+	m_queue_size_mb = std::max(m_queue_size_mb, 1);
+	m_publish_queue_size = std::max(m_publish_queue_size, 1);
+
 	// Dynamic default values
 	if(m_camera_name.empty())
-		m_camera_name = "main";
+		m_camera_name = "top";
 	if(m_camera_frame.empty())
 		m_camera_frame = "/camera_" + m_camera_name;
 
@@ -154,6 +164,13 @@ bool PepperCamera::init_stream()
 	// Print that the stream is being initialised
 	ROS_INFO("Initialising Pepper camera stream...");
 
+	// Initialise the GStreamer library
+	if(!gst_is_initialized())
+	{
+		gst_init(0, NULL);
+		ROS_INFO("Loaded %s", gst_version_string());
+	}
+
 	// Flags whether certain parts of the pipeline are required
 	bool record_jpegs = !m_record_jpegs.empty();
 	bool record_mjpeg = !m_record_mjpeg.empty();
@@ -173,15 +190,18 @@ bool PepperCamera::init_stream()
 
 	// Advertise ROS interface
 	std::string camera_topic_base = "camera/" + m_camera_name;
-	m_pub_rgb = m_image_transport.advertiseCamera(camera_topic_base + "/rgb", 3);
-
-	// Initialise the GStreamer library
-	if(!gst_is_initialized())
+	if(m_publish_jpeg || m_publish_yuv || m_publish_rgb)
 	{
-		ROS_INFO("Initialising GStreamer library...");
-		gst_init(0, NULL);
-		ROS_INFO("Loaded %s", gst_version_string());
+		m_pub_camera_info = m_nh_interface.advertise<sensor_msgs::CameraInfo>(camera_topic_base + "/camera_info", m_publish_queue_size);
+		ROS_INFO("Configured a ROS publisher queue length of %d", m_publish_queue_size);
 	}
+	m_pub_camera_info_stamp.fromNSec(0);
+	if(m_publish_jpeg)
+		m_pub_jpeg = m_nh_interface.advertise<sensor_msgs::CompressedImage>(camera_topic_base + "/jpeg", m_publish_queue_size);
+	if(m_publish_yuv)
+		m_pub_yuv = m_nh_interface.advertise<sensor_msgs::Image>(camera_topic_base + "/yuv", m_publish_queue_size);
+	if(m_publish_rgb)
+		m_pub_rgb = m_image_transport.advertise(camera_topic_base + "/rgb", m_publish_queue_size);
 
 	// Create the required pipeline elements
 	bool any_elem_invalid = false;
@@ -248,10 +268,10 @@ bool PepperCamera::init_stream()
 
 	// Create the pipeline
 	m_pipeline = gst_pipeline_new("pipeline");
+	m_pipeline_stalled = false;
 	GstBin* pipeline_bin = GST_BIN(m_pipeline);
 
 	// Configure/add the UDP source
-	ROS_INFO("Will listen to UDP on port %d", m_port);
 	GstCaps* udpsrc_caps = gst_caps_new_simple("application/x-rtp", "encoding-name", G_TYPE_STRING, "JPEG", NULL);
 	g_object_set(m_elem->udpsrc, "port", (gint) m_port, "caps", udpsrc_caps, NULL);
 	gst_caps_unref(udpsrc_caps);
@@ -276,7 +296,7 @@ bool PepperCamera::init_stream()
 	if(m_elem->record_jpegs)
 	{
 		configure_queue(m_elem->record_jpegs_queue);
-		g_object_set(m_elem->record_jpegs, "location", m_record_jpegs.c_str(), "index", (gint) 1, "max-files", (guint) std::max(m_record_jpegs_max, 0), "sync", FALSE, NULL);
+		g_object_set(m_elem->record_jpegs, "location", m_record_jpegs.c_str(), "index", (gint) 1, "max-files", (guint) m_record_jpegs_max, "sync", FALSE, NULL);
 		gst_bin_add_many_ref(pipeline_bin, m_elem->record_jpegs, m_elem->record_jpegs_queue, NULL);
 	}
 
@@ -325,7 +345,7 @@ bool PepperCamera::init_stream()
 	if(m_elem->record_h264)
 	{
 		configure_queue(m_elem->record_h264_queue);
-		g_object_set(m_elem->record_h264_enc, "pass", 0, "bitrate", (guint) std::max(m_record_h264_bitrate, 50), "speed-preset", m_record_h264_speed, NULL);
+		g_object_set(m_elem->record_h264_enc, "pass", 0, "bitrate", (guint) m_record_h264_bitrate, "speed-preset", m_record_h264_speed, NULL);
 		g_object_set(m_elem->record_h264, "location", m_record_h264.c_str(), "sync", FALSE, NULL);
 		gst_bin_add_many_ref(pipeline_bin, m_elem->record_h264_enc, m_elem->record_h264_mux, m_elem->record_h264, m_elem->record_h264_queue, NULL);
 	}
@@ -337,6 +357,9 @@ bool PepperCamera::init_stream()
 		g_object_set(m_elem->preview, "text-overlay", TRUE, "sync", FALSE, NULL);
 		gst_bin_add_many_ref(pipeline_bin, m_elem->preview, m_elem->preview_queue, NULL);
 	}
+
+	// Display selected configuration information
+	ROS_INFO_COND(m_elem->tee_jpeg || m_elem->tee_yuv, "Configured a GStreamer queue size of %dMB", m_queue_size_mb);
 
 	// Link the UDP source
 	int link_success = TRUE;
@@ -450,7 +473,6 @@ bool PepperCamera::init_stream()
 
 	// Create a main loop
 	m_main_loop = g_main_loop_new(NULL, FALSE);
-	m_queue_overrun = false;
 
 	// Listen to selected messages on the bus
 	GstBus* bus = gst_element_get_bus(m_pipeline);
@@ -462,7 +484,6 @@ bool PepperCamera::init_stream()
 
 	// Add unix signal handler
 	m_sigint_callback_id = g_unix_signal_add(SIGINT, PC_G_SOURCE_FUNC(PepperCamera::sigint_callback), this);
-	ROS_INFO("Added GStreamer SIGINT handler");
 
 	// GStreamer and ROS time calibration
 	GstClock* pipeline_clock = gst_pipeline_get_clock(GST_PIPELINE_CAST(m_pipeline));
@@ -479,8 +500,26 @@ bool PepperCamera::init_stream()
 // Run the Pepper camera stream
 bool PepperCamera::run_stream()
 {
-	// Run the pipeline
+	// Summarise the pipeline that's about to run
 	ROS_INFO("Running Pepper camera stream...");
+	ROS_INFO("Listening to UDP packets on port %d", m_port);
+	ROS_INFO("Streaming %s camera (TF frame: %s)", m_camera_name.c_str(), m_camera_frame.c_str());
+	ROS_INFO_COND(m_time_offset != 0.0, "Applying frame timestamp offset of %+.3fs", m_time_offset);
+	ROS_INFO_COND(m_elem->publish_jpeg || m_elem->publish_yuv || m_elem->publish_rgb, "Publishing camera info on topic: %s", m_pub_camera_info.getTopic().c_str());
+	ROS_INFO_COND(m_elem->publish_jpeg, "Publishing JPEG images on topic: %s", m_pub_jpeg.getTopic().c_str());
+	ROS_INFO_COND(m_elem->publish_yuv, "Publishing YUV images on topic: %s", m_pub_yuv.getTopic().c_str());
+	ROS_INFO_COND(m_elem->publish_rgb, "Publishing RGB images on topic: %s", m_pub_rgb.getTopic().c_str());
+	if(m_elem->record_jpegs)
+	{
+		if(m_record_jpegs_max == 0)
+			ROS_INFO("Recording unlimited JPEG frames to: %s", m_record_jpegs.c_str());
+		else
+			ROS_INFO("Recording latest %d JPEG frames to: %s", m_record_jpegs_max, m_record_jpegs.c_str());
+	}
+	ROS_INFO_COND(m_elem->record_mjpeg, "Recording MJPEG video to: %s", m_record_mjpeg.c_str());
+	ROS_INFO_COND(m_elem->record_h264, "Recording H264 video to: %s", m_record_h264.c_str());
+
+	// Start the pipeline
 	if(gst_element_set_state(m_pipeline, GST_STATE_PLAYING) == GST_STATE_CHANGE_FAILURE)
 	{
 		ROS_ERROR("Failed to change pipeline state to PLAYING");
@@ -504,7 +543,6 @@ void PepperCamera::cleanup_stream()
 	if(m_sigint_callback_id > 0U)
 	{
 		g_source_remove(m_sigint_callback_id);
-		ROS_INFO("Removed GStreamer SIGINT handler");
 		m_sigint_callback_id = 0U;
 	}
 
@@ -520,7 +558,6 @@ void PepperCamera::cleanup_stream()
 	{
 		ROS_INFO("Stopping Pepper camera stream...");
 		gst_element_set_state(m_pipeline, GST_STATE_NULL);
-		ROS_INFO("Deleting Pepper camera stream...");
 		gst_object_unref(m_pipeline);
 		m_pipeline = NULL;
 	}
@@ -533,8 +570,29 @@ void PepperCamera::cleanup_stream()
 		m_elem = NULL;
 	}
 
-	// Shut down ROS interface
+	// Shut down the ROS interface
+	m_pub_camera_info.shutdown();
+	m_pub_jpeg.shutdown();
+	m_pub_yuv.shutdown();
 	m_pub_rgb.shutdown();
+}
+
+//
+// ROS utilities
+//
+
+// Publish a new camera info message
+void PepperCamera::publish_camera_info(const ros::Time& stamp)
+{
+	// Publish a camera info message if the timestamp is new
+	if(stamp != m_pub_camera_info_stamp)
+	{
+		m_pub_camera_info_stamp = stamp;
+		sensor_msgs::CameraInfoPtr camera_info(new sensor_msgs::CameraInfo(m_camera_info_manager.getCameraInfo()));
+		camera_info->header.frame_id = m_camera_frame;
+		camera_info->header.stamp = stamp;
+		m_pub_camera_info.publish(camera_info);
+	}
 }
 
 //
@@ -631,7 +689,8 @@ void PepperCamera::stream_warning_callback(GstBus* bus, GstMessage* msg, PepperC
 
 	// Print warning details to the screen
 	gst_message_parse_warning(msg, &err, &debug);
-	ROS_WARN("Warning received from element %s: %s\nDebugging information: %s", GST_OBJECT_NAME(msg->src), err->message, (debug ? debug : "None"));
+	ROS_WARN("Warning received from element %s: %s", (msg->src ? GST_OBJECT_NAME(msg->src) : "unknown"), err->message);
+	ROS_WARN("Debugging information: %s", (debug ? debug : "None"));
 	g_clear_error(&err);
 	g_free(debug);
 }
@@ -645,7 +704,12 @@ void PepperCamera::stream_error_callback(GstBus* bus, GstMessage* msg, PepperCam
 
 	// Print error details to the screen
 	gst_message_parse_error(msg, &err, &debug);
-	ROS_ERROR("Error received from element %s: %s\nDebugging information: %s", GST_OBJECT_NAME(msg->src), err->message, (debug ? debug : "None"));
+	if(std::strcmp(err->message, "Output window was closed") != 0)
+	{
+		ROS_ERROR("Error received from element %s: %s", (msg->src ? GST_OBJECT_NAME(msg->src) : "unknown"), err->message);
+		ROS_ERROR("Debugging information: %s", (debug ? debug : "None"));
+		pc->m_pipeline_stalled = true;
+	}
 	g_clear_error(&err);
 	g_free(debug);
 
@@ -656,8 +720,8 @@ void PepperCamera::stream_error_callback(GstBus* bus, GstMessage* msg, PepperCam
 // Queue overrun callback
 void PepperCamera::queue_overrun_callback(GstElement* queue, PepperCamera* pc)
 {
-	// Store that an overrun occurred
-	pc->m_queue_overrun = true;
+	// A queue overrun makes the pipeline stall
+	pc->m_pipeline_stalled = true;
 
 	// Retrieve the current queue levels
 	guint64 cur_time = 0LU;
@@ -672,13 +736,208 @@ void PepperCamera::queue_overrun_callback(GstElement* queue, PepperCamera* pc)
 // New JPEG image sample callback
 GstFlowReturn PepperCamera::publish_jpeg_callback(GstElement* appsink, PepperCamera* pc)
 {
-	return GST_FLOW_OK;  // TODO: TEMP
+	// Declare variables
+	GstFlowReturn flow = GST_FLOW_ERROR;
+
+	// Retrieve and process the sample
+	GstSample* sample;
+	g_signal_emit_by_name(appsink, "pull-sample", &sample);
+	if(!sample)
+		ROS_ERROR("JPEG publisher failed to pull a sample");
+	else
+	{
+		// Retrieve and process the sample buffer
+		GstBuffer* buffer = gst_sample_get_buffer(sample);
+		GstCaps* caps = gst_sample_get_caps(sample);
+		if(!buffer)
+			ROS_ERROR("JPEG publisher failed to obtain the buffer for a pulled sample");
+		else if(!caps)
+			ROS_ERROR("JPEG publisher failed to obtain the caps for a pulled sample");
+		else
+		{
+			// Retrieve and process the sample buffer memory
+			guint num_memories = gst_buffer_n_memory(buffer);
+			guint num_caps_structs = gst_caps_get_size(caps);
+			if(num_memories < 1U)
+				ROS_ERROR("JPEG publisher received a buffer with no memory");
+			else if(num_caps_structs < 1U)
+				ROS_ERROR("JPEG publisher received a caps with no structures");
+			else
+			{
+				// One-time warnings for silently ignored memories/structures
+				if(num_memories != 1U)
+					ROS_WARN_ONCE("JPEG publisher is receiving buffers with multiple memories in it => Always just taking first one");
+				if(num_caps_structs != 1U)
+					ROS_WARN_ONCE("JPEG publisher is receiving caps with multiple structures in it => Always just taking first one");
+
+				// Retrieve and process the raw data inside the sample buffer memory
+				GstMemory *memory = gst_buffer_peek_memory(buffer, 0U);
+				GstStructure* caps_struct = gst_caps_get_structure(caps, 0U);
+				gint caps_width = 0, caps_height = 0;
+				GstMapInfo memory_info;
+				if(!memory)
+					ROS_ERROR("JPEG publisher failed to get a pointer to the sample buffer memory");
+				else if(!caps_struct)
+					ROS_ERROR("JPEG publisher failed to get the internal caps structure");
+				else if(!gst_structure_get_int(caps_struct, "width", &caps_width) || !gst_structure_get_int(caps_struct, "height", &caps_height) || caps_width < 1 || caps_height < 1)
+					ROS_ERROR("JPEG publisher failed to determine the sample image dimensions from the caps");
+				else if(!gst_memory_map(memory, &memory_info, GST_MAP_READ))
+					ROS_ERROR("JPEG publisher failed to extract the raw data from the sample buffer memory");
+				else
+				{
+					// Retrieve the raw data pointer and size
+					gsize& data_size = memory_info.size;
+					guint8*& data_ptr = memory_info.data;
+					ros::Time data_stamp((pc->m_pipeline->base_time + buffer->pts) * 1e-9 + pc->m_pipeline_time_offset.toSec() + pc->m_time_offset);
+
+					// Publish a camera info message
+					pc->publish_camera_info(data_stamp);
+
+					// Display info about the data that the ROS publisher is receiving
+					static gint cur_caps_width = 0, cur_caps_height = 0;
+					if(cur_caps_width != caps_width || cur_caps_height != caps_height)
+					{
+						cur_caps_width = caps_width;
+						cur_caps_height = caps_height;
+						ROS_INFO("JPEG publisher is receiving %dx%d JPEG images (~%" G_GSIZE_FORMAT " bytes)", cur_caps_width, cur_caps_height, 1000 * ((data_size + 500) / 1000));
+					}
+
+					// Publish an image message
+					sensor_msgs::CompressedImagePtr image(new sensor_msgs::CompressedImage());
+					image->header.frame_id = pc->m_camera_frame;
+					image->header.stamp = data_stamp;
+					image->format = "jpeg";
+					image->data.insert(image->data.end(), data_ptr, data_ptr + data_size);
+					pc->m_pub_jpeg.publish(image);
+
+					// Signal that the data flow is okay
+					flow = GST_FLOW_OK;
+
+					// Unmap the sample buffer memory
+					gst_memory_unmap(memory, &memory_info);
+				}
+			}
+		}
+
+		// Free the sample
+		gst_sample_unref(sample);
+	}
+
+	// Return the data flow state
+	return flow;
 }
 
 // New YUV image sample callback
 GstFlowReturn PepperCamera::publish_yuv_callback(GstElement* appsink, PepperCamera* pc)
 {
-	return GST_FLOW_OK;  // TODO: TEMP
+	// Declare variables
+	GstFlowReturn flow = GST_FLOW_ERROR;
+
+	// Retrieve and process the sample
+	GstSample* sample;
+	g_signal_emit_by_name(appsink, "pull-sample", &sample);
+	if(!sample)
+		ROS_ERROR("YUV publisher failed to pull a sample");
+	else
+	{
+		// Retrieve and process the sample buffer
+		GstBuffer* buffer = gst_sample_get_buffer(sample);
+		GstCaps* caps = gst_sample_get_caps(sample);
+		if(!buffer)
+			ROS_ERROR("YUV publisher failed to obtain the buffer for a pulled sample");
+		else if(!caps)
+			ROS_ERROR("YUV publisher failed to obtain the caps for a pulled sample");
+		else
+		{
+			// Retrieve and process the sample buffer memory
+			guint num_memories = gst_buffer_n_memory(buffer);
+			guint num_caps_structs = gst_caps_get_size(caps);
+			if(num_memories < 1U)
+				ROS_ERROR("YUV publisher received a buffer with no memory");
+			else if(num_caps_structs < 1U)
+				ROS_ERROR("YUV publisher received a caps with no structures");
+			else
+			{
+				// One-time warnings for silently ignored memories/structures
+				if(num_memories != 1U)
+					ROS_WARN_ONCE("YUV publisher is receiving buffers with multiple memories in it => Always just taking first one");
+				if(num_caps_structs != 1U)
+					ROS_WARN_ONCE("YUV publisher is receiving caps with multiple structures in it => Always just taking first one");
+
+				// Retrieve and process the raw data inside the sample buffer memory
+				GstMemory *memory = gst_buffer_peek_memory(buffer, 0U);
+				GstStructure* caps_struct = gst_caps_get_structure(caps, 0U);
+				gint caps_width = 0, caps_height = 0;
+				const gchar* caps_format = NULL;
+				GstMapInfo memory_info;
+				if(!memory)
+					ROS_ERROR("YUV publisher failed to get a pointer to the sample buffer memory");
+				else if(!caps_struct)
+					ROS_ERROR("YUV publisher failed to get the internal caps structure");
+				else if(!gst_structure_get_int(caps_struct, "width", &caps_width) || !gst_structure_get_int(caps_struct, "height", &caps_height) || caps_width < 1 || caps_height < 1)
+					ROS_ERROR("YUV publisher failed to determine the sample image dimensions from the caps");
+				else if(!(caps_format = gst_structure_get_string(caps_struct, "format")))
+					ROS_ERROR("YUV publisher failed to determine the sample image format from the caps");
+				else if(!gst_memory_map(memory, &memory_info, GST_MAP_READ))
+					ROS_ERROR("YUV publisher failed to extract the raw data from the sample buffer memory");
+				else
+				{
+					// Retrieve the raw data pointer and size
+					gsize& data_size = memory_info.size;
+					guint8*& data_ptr = memory_info.data;
+					ros::Time data_stamp((pc->m_pipeline->base_time + buffer->pts) * 1e-9 + pc->m_pipeline_time_offset.toSec() + pc->m_time_offset);
+
+					// Publish a camera info message
+					pc->publish_camera_info(data_stamp);
+
+					// Display info about the data that the ROS publisher is receiving
+					static gint cur_caps_width = 0, cur_caps_height = 0;
+					static std::string cur_caps_format;
+					static gsize cur_data_size = 0U;
+					if(cur_caps_width != caps_width || cur_caps_height != caps_height || cur_caps_format != caps_format || cur_data_size != data_size)
+					{
+						cur_caps_width = caps_width;
+						cur_caps_height = caps_height;
+						cur_caps_format = caps_format;
+						cur_data_size = data_size;
+						ROS_INFO("YUV publisher is receiving %dx%d %s images (%" G_GSIZE_FORMAT " bytes)", cur_caps_width, cur_caps_height, cur_caps_format.c_str(), cur_data_size);
+					}
+
+					// Ensure the data size is as expected
+					gsize cur_row_size = cur_caps_width + (cur_caps_width >> 1);
+					gsize exp_data_size = cur_caps_height * cur_row_size;
+					if(cur_data_size != exp_data_size)
+						ROS_ERROR("YUV publisher received unexpected number of image bytes: %" G_GSIZE_FORMAT " (received) vs %" G_GSIZE_FORMAT " (expected)", cur_data_size, exp_data_size);
+					else
+					{
+						// Publish an image message
+						sensor_msgs::ImagePtr image(new sensor_msgs::Image());
+						image->header.frame_id = pc->m_camera_frame;
+						image->header.stamp = data_stamp;
+						image->width = cur_caps_width;
+						image->height = cur_caps_height;
+						image->encoding = "yuv_" + cur_caps_format;  // TODO: Have constants for this that receiving code can use as well (image_encodings.h?)
+						image->is_bigendian = false;
+						image->step = cur_row_size;
+						image->data.insert(image->data.end(), data_ptr, data_ptr + exp_data_size);
+						pc->m_pub_yuv.publish(image);
+
+						// Signal that the data flow is okay
+						flow = GST_FLOW_OK;
+					}
+
+					// Unmap the sample buffer memory
+					gst_memory_unmap(memory, &memory_info);
+				}
+			}
+		}
+
+		// Free the sample
+		gst_sample_unref(sample);
+	}
+
+	// Return the data flow state
+	return flow;
 }
 
 // New RGB image sample callback
@@ -728,17 +987,21 @@ GstFlowReturn PepperCamera::publish_rgb_callback(GstElement* appsink, PepperCame
 					ROS_ERROR("RGB publisher failed to get a pointer to the sample buffer memory");
 				else if(!caps_struct)
 					ROS_ERROR("RGB publisher failed to get the internal caps structure");
-				else if(!gst_memory_map(memory, &memory_info, GST_MAP_READ))
-					ROS_ERROR("RGB publisher failed to extract the raw data from the sample buffer memory");
 				else if(!gst_structure_get_int(caps_struct, "width", &caps_width) || !gst_structure_get_int(caps_struct, "height", &caps_height) || caps_width < 1 || caps_height < 1)
 					ROS_ERROR("RGB publisher failed to determine the sample image dimensions from the caps");
 				else if(!(caps_format = gst_structure_get_string(caps_struct, "format")))
 					ROS_ERROR("RGB publisher failed to determine the sample image format from the caps");
+				else if(!gst_memory_map(memory, &memory_info, GST_MAP_READ))
+					ROS_ERROR("RGB publisher failed to extract the raw data from the sample buffer memory");
 				else
 				{
 					// Retrieve the raw data pointer and size
 					gsize& data_size = memory_info.size;
 					guint8*& data_ptr = memory_info.data;
+					ros::Time data_stamp((pc->m_pipeline->base_time + buffer->pts) * 1e-9 + pc->m_pipeline_time_offset.toSec() + pc->m_time_offset);
+
+					// Publish a camera info message
+					pc->publish_camera_info(data_stamp);
 
 					// Display info about the data that the ROS publisher is receiving
 					static gint cur_caps_width = 0, cur_caps_height = 0;
@@ -760,24 +1023,17 @@ GstFlowReturn PepperCamera::publish_rgb_callback(GstElement* appsink, PepperCame
 						ROS_ERROR("RGB publisher received unexpected number of image bytes: %" G_GSIZE_FORMAT " (received) vs %" G_GSIZE_FORMAT " (expected)", cur_data_size, exp_data_size);
 					else
 					{
-						// Construct image message
+						// Publish an image message
 						sensor_msgs::ImagePtr image(new sensor_msgs::Image());
 						image->header.frame_id = pc->m_camera_frame;
-						image->header.stamp.fromSec((pc->m_pipeline->base_time + buffer->pts) * 1e-9 + pc->m_pipeline_time_offset.toSec() + pc->m_time_offset);
+						image->header.stamp = data_stamp;
 						image->width = cur_caps_width;
 						image->height = cur_caps_height;
 						image->encoding = sensor_msgs::image_encodings::RGB8;
 						image->is_bigendian = false;
 						image->step = cur_row_size;
 						image->data.insert(image->data.end(), data_ptr, data_ptr + exp_data_size);
-
-						// Construct camera info message
-						sensor_msgs::CameraInfoPtr camera_info(new sensor_msgs::CameraInfo(pc->m_camera_info_manager.getCameraInfo()));
-						camera_info->header.frame_id = image->header.frame_id;
-						camera_info->header.stamp = image->header.stamp;
-
-						// Publish the image and camera info
-						pc->m_pub_rgb.publish(image, camera_info);
+						pc->m_pub_rgb.publish(image);
 
 						// Signal that the data flow is okay
 						flow = GST_FLOW_OK;
@@ -809,7 +1065,7 @@ void PepperCamera::configure_queue(GstElement* queue)
 		return;
 
 	// Enable only a byte limit on the queue
-	g_object_set(queue, "max-size-buffers", (guint) 0U, "max-size-bytes", (guint) (std::max(m_queue_size_mb, 1) * 1048576U), "max-size-time", (guint64) 0LU, NULL);
+	g_object_set(queue, "max-size-buffers", (guint) 0U, "max-size-bytes", (guint) (m_queue_size_mb * 1048576U), "max-size-time", (guint64) 0LU, NULL);
 
 	// Handle queue overrun
 	g_signal_connect(queue, "overrun", G_CALLBACK(PepperCamera::queue_overrun_callback), this);
@@ -869,7 +1125,7 @@ void PepperCamera::gst_object_unref_safe(GstObject** object_ptr)
 void PepperCamera::cancel_main_loop()
 {
 	// Cancel the main loop if it is running
-	if(m_pipeline != NULL && m_main_loop != NULL && g_main_loop_is_running(m_main_loop) && !m_queue_overrun)
+	if(m_pipeline != NULL && m_main_loop != NULL && g_main_loop_is_running(m_main_loop) && !m_pipeline_stalled)
 	{
 		GstState current_state = GST_STATE_NULL, pending_state = GST_STATE_NULL;
 		gst_element_get_state(m_pipeline, &current_state, &pending_state, 0U);

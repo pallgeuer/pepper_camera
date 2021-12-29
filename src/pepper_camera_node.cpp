@@ -13,7 +13,6 @@ int main(int argc, char** argv)
 
 	// Start an asynchronous ROS spinner
 	ros::AsyncSpinner ros_spinner(2);
-	ROS_INFO("Starting ROS main loop...");
 	ros_spinner.start();
 
 	// Run the Pepper camera streamer
@@ -21,11 +20,9 @@ int main(int argc, char** argv)
 	pcamera.run();
 
 	// Stop the asynchronous ROS spinner
-	ROS_INFO("Stopping ROS main loop...");
 	ros_spinner.stop();
 
 	// Shut down ROS (would happen anyway when last node handle is destructed)
-	ROS_INFO("Shutting down ROS...");
 	ros::shutdown();
 
 	// Return success

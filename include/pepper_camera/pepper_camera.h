@@ -27,7 +27,7 @@ namespace pepper_camera
 	{
 	public:
 		// Constructor
-		PepperCamera(const ros::NodeHandle& nh_interface, const ros::NodeHandle& nh_param);
+		PepperCamera(ros::NodeHandle& nh_interface, ros::NodeHandle& nh_param);
 
 		// Run
 		void run();
@@ -61,14 +61,22 @@ namespace pepper_camera
 		std::string m_camera_info_url;
 		double m_time_offset;
 		int m_queue_size_mb;
+		int m_publish_queue_size;
 
 		// ROS variables
-		const ros::NodeHandle& m_nh_interface;
-		const ros::NodeHandle& m_nh_param;
+		ros::NodeHandle& m_nh_interface;
+		ros::NodeHandle& m_nh_param;
 		ros::Time m_pipeline_time_offset;
 		camera_info_manager::CameraInfoManager m_camera_info_manager;
 		image_transport::ImageTransport m_image_transport;
-		image_transport::CameraPublisher m_pub_rgb;
+		ros::Publisher m_pub_camera_info;
+		ros::Time m_pub_camera_info_stamp;
+		ros::Publisher m_pub_jpeg;
+		ros::Publisher m_pub_yuv;
+		image_transport::Publisher m_pub_rgb;
+
+		// ROS utilities
+		void publish_camera_info(const ros::Time& stamp);
 
 		// GStreamer pipeline elements class
 		class GSElements {
@@ -113,8 +121,8 @@ namespace pepper_camera
 		guint m_sigint_callback_id = 0U;
 		GSElements* m_elem = NULL;
 		GstElement* m_pipeline = NULL;
+		bool m_pipeline_stalled = false;
 		GMainLoop* m_main_loop = NULL;
-		bool m_queue_overrun = false;
 
 		// GStreamer callbacks
 		static gboolean sigint_callback(PepperCamera* pc);
