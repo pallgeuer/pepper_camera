@@ -846,7 +846,7 @@ GstFlowReturn PepperCamera::publish_callback(GstElement* appsink, PublishImageTy
 							image->header.stamp = data_stamp;
 							image->width = cur_caps_width;
 							image->height = cur_caps_height;
-							image->encoding = "yuv_" + cur_caps_format;  // TODO: Have constants for this that receiving code can use as well (image_encodings.h?)
+							image->encoding = "yuv_" + cur_caps_format;
 							image->is_bigendian = false;
 							image->step = cur_row_size;
 							image->data.insert(image->data.end(), data_ptr, data_ptr + exp_data_size);
