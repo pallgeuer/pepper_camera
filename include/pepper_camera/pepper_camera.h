@@ -16,6 +16,9 @@ extern "C"
 #include <gst/gst.h>
 }
 
+// Defines
+#define PC_G_SOURCE_FUNC(f) ((GSourceFunc) (void (*)(void)) (f))  // Note: G_SOURCE_FUNC is only available as of GLib 2.58
+
 // Pepper camera namespace
 namespace pepper_camera
 {
@@ -128,6 +131,7 @@ namespace pepper_camera
 		static gboolean link_tee_queue(GstElement* tee, GstElement* queue, GstPad*& tee_pad);
 		static gboolean gst_bin_add_ref(GstBin *bin, GstElement *element);
 		static void gst_bin_add_many_ref(GstBin *bin, GstElement *element1, ...) G_GNUC_NULL_TERMINATED;
+		static void gst_object_unref_safe(GstObject** object_ptr);
 		void cancel_main_loop();
 		void quit_main_loop();
 

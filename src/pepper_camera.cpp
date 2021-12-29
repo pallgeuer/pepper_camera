@@ -461,7 +461,7 @@ bool PepperCamera::init_stream()
 	gst_object_unref(bus);
 
 	// Add unix signal handler
-	m_sigint_callback_id = g_unix_signal_add(SIGINT, G_SOURCE_FUNC(PepperCamera::sigint_callback), this);
+	m_sigint_callback_id = g_unix_signal_add(SIGINT, PC_G_SOURCE_FUNC(PepperCamera::sigint_callback), this);
 	ROS_INFO("Added GStreamer SIGINT handler");
 
 	// GStreamer and ROS time calibration
@@ -561,38 +561,38 @@ void pepper_camera::PepperCamera::GSElements::clear()
 	}
 
 	// Unref all elements if they exist and reset the pointers to NULL
-	gst_clear_object(&udpsrc);
-	gst_clear_object(&rtpjpegdepay);
-	gst_clear_object(&tee_jpeg);
-	gst_clear_object(&publish_jpeg_pad);
-	gst_clear_object(&publish_jpeg_queue);
-	gst_clear_object(&publish_jpeg);
-	gst_clear_object(&record_jpegs_pad);
-	gst_clear_object(&record_jpegs_queue);
-	gst_clear_object(&record_jpegs);
-	gst_clear_object(&record_mjpeg_pad);
-	gst_clear_object(&record_mjpeg_queue);
-	gst_clear_object(&record_mjpeg_mux);
-	gst_clear_object(&record_mjpeg);
-	gst_clear_object(&jpegdec_pad);
-	gst_clear_object(&jpegdec_queue);
-	gst_clear_object(&jpegdec);
-	gst_clear_object(&tee_yuv);
-	gst_clear_object(&publish_yuv_pad);
-	gst_clear_object(&publish_yuv_queue);
-	gst_clear_object(&publish_yuv);
-	gst_clear_object(&publish_rgb_pad);
-	gst_clear_object(&publish_rgb_queue);
-	gst_clear_object(&publish_rgb_convert);
-	gst_clear_object(&publish_rgb);
-	gst_clear_object(&record_h264_pad);
-	gst_clear_object(&record_h264_queue);
-	gst_clear_object(&record_h264_enc);
-	gst_clear_object(&record_h264_mux);
-	gst_clear_object(&record_h264);
-	gst_clear_object(&preview_pad);
-	gst_clear_object(&preview_queue);
-	gst_clear_object(&preview);
+	gst_object_unref_safe((GstObject**) &udpsrc);
+	gst_object_unref_safe((GstObject**) &rtpjpegdepay);
+	gst_object_unref_safe((GstObject**) &tee_jpeg);
+	gst_object_unref_safe((GstObject**) &publish_jpeg_pad);
+	gst_object_unref_safe((GstObject**) &publish_jpeg_queue);
+	gst_object_unref_safe((GstObject**) &publish_jpeg);
+	gst_object_unref_safe((GstObject**) &record_jpegs_pad);
+	gst_object_unref_safe((GstObject**) &record_jpegs_queue);
+	gst_object_unref_safe((GstObject**) &record_jpegs);
+	gst_object_unref_safe((GstObject**) &record_mjpeg_pad);
+	gst_object_unref_safe((GstObject**) &record_mjpeg_queue);
+	gst_object_unref_safe((GstObject**) &record_mjpeg_mux);
+	gst_object_unref_safe((GstObject**) &record_mjpeg);
+	gst_object_unref_safe((GstObject**) &jpegdec_pad);
+	gst_object_unref_safe((GstObject**) &jpegdec_queue);
+	gst_object_unref_safe((GstObject**) &jpegdec);
+	gst_object_unref_safe((GstObject**) &tee_yuv);
+	gst_object_unref_safe((GstObject**) &publish_yuv_pad);
+	gst_object_unref_safe((GstObject**) &publish_yuv_queue);
+	gst_object_unref_safe((GstObject**) &publish_yuv);
+	gst_object_unref_safe((GstObject**) &publish_rgb_pad);
+	gst_object_unref_safe((GstObject**) &publish_rgb_queue);
+	gst_object_unref_safe((GstObject**) &publish_rgb_convert);
+	gst_object_unref_safe((GstObject**) &publish_rgb);
+	gst_object_unref_safe((GstObject**) &record_h264_pad);
+	gst_object_unref_safe((GstObject**) &record_h264_queue);
+	gst_object_unref_safe((GstObject**) &record_h264_enc);
+	gst_object_unref_safe((GstObject**) &record_h264_mux);
+	gst_object_unref_safe((GstObject**) &record_h264);
+	gst_object_unref_safe((GstObject**) &preview_pad);
+	gst_object_unref_safe((GstObject**) &preview_queue);
+	gst_object_unref_safe((GstObject**) &preview);
 }
 
 //
@@ -755,7 +755,7 @@ GstFlowReturn PepperCamera::publish_rgb_callback(GstElement* appsink, PepperCame
 
 					// Ensure the data size is as expected
 					gsize cur_row_size = cur_caps_width * 3U;
-					gsize exp_data_size =  cur_caps_height * cur_row_size;
+					gsize exp_data_size = cur_caps_height * cur_row_size;
 					if(cur_data_size != exp_data_size)
 						ROS_ERROR("RGB publisher received unexpected number of image bytes: %" G_GSIZE_FORMAT " (received) vs %" G_GSIZE_FORMAT " (expected)", cur_data_size, exp_data_size);
 					else
@@ -856,6 +856,13 @@ void PepperCamera::gst_bin_add_many_ref(GstBin *bin, GstElement *element1, ...)
 		element1 = va_arg(args, GstElement*);
 	}
 	va_end(args);
+}
+
+// Drop-in replacement for gst_clear_object() for GStreamer <1.16 (except that casting to GstObject** is required)
+void PepperCamera::gst_object_unref_safe(GstObject** object_ptr)
+{
+	// Clear the pointer and unref the object
+	g_clear_pointer(object_ptr, gst_object_unref);
 }
 
 // Cancel the main loop
