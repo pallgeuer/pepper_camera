@@ -732,8 +732,8 @@ void PepperCamera::queue_overrun_callback(GstElement* queue, PepperCamera* pc)
 	ROS_WARN("Try increasing the queue MB limit using queue_size_mb ROS param?");
 }
 
-// New JPEG image sample callback
-GstFlowReturn PepperCamera::publish_jpeg_callback(GstElement* appsink, PepperCamera* pc)
+// Publish image callback
+GstFlowReturn PepperCamera::publish_callback(GstElement* appsink, PublishImageType type, const char* name)
 {
 	// Declare variables
 	GstFlowReturn flow = GST_FLOW_ERROR;
@@ -742,300 +742,162 @@ GstFlowReturn PepperCamera::publish_jpeg_callback(GstElement* appsink, PepperCam
 	GstSample* sample;
 	g_signal_emit_by_name(appsink, "pull-sample", &sample);
 	if(!sample)
-		ROS_ERROR("JPEG publisher failed to pull a sample");
+		ROS_ERROR("%s publisher failed to pull a sample", name);
 	else
 	{
 		// Retrieve and process the sample buffer
 		GstBuffer* buffer = gst_sample_get_buffer(sample);
 		GstCaps* caps = gst_sample_get_caps(sample);
 		if(!buffer)
-			ROS_ERROR("JPEG publisher failed to obtain the buffer for a pulled sample");
+			ROS_ERROR("%s publisher failed to obtain the buffer for a pulled sample", name);
 		else if(!caps)
-			ROS_ERROR("JPEG publisher failed to obtain the caps for a pulled sample");
+			ROS_ERROR("%s publisher failed to obtain the caps for a pulled sample", name);
 		else
 		{
 			// Retrieve and process the sample buffer memory
 			guint num_memories = gst_buffer_n_memory(buffer);
 			guint num_caps_structs = gst_caps_get_size(caps);
 			if(num_memories < 1U)
-				ROS_ERROR("JPEG publisher received a buffer with no memory");
+				ROS_ERROR("%s publisher received a buffer with no memory", name);
 			else if(num_caps_structs < 1U)
-				ROS_ERROR("JPEG publisher received a caps with no structures");
+				ROS_ERROR("%s publisher received a caps with no structures", name);
 			else
 			{
 				// One-time warnings for silently ignored memories/structures
 				if(num_memories != 1U)
-					ROS_WARN_ONCE("JPEG publisher is receiving buffers with multiple memories in it => Always just taking first one");
+					ROS_WARN_ONCE("%s publisher is receiving buffers with multiple memories in it => Always just taking first one", name);
 				if(num_caps_structs != 1U)
-					ROS_WARN_ONCE("JPEG publisher is receiving caps with multiple structures in it => Always just taking first one");
+					ROS_WARN_ONCE("%s publisher is receiving caps with multiple structures in it => Always just taking first one", name);
 
 				// Retrieve and process the raw data inside the sample buffer memory
 				GstMemory *memory = gst_buffer_peek_memory(buffer, 0U);
 				GstStructure* caps_struct = gst_caps_get_structure(caps, 0U);
 				gint caps_width = 0, caps_height = 0;
+				const gchar* caps_format = NULL;
 				GstMapInfo memory_info;
 				if(!memory)
-					ROS_ERROR("JPEG publisher failed to get a pointer to the sample buffer memory");
+					ROS_ERROR("%s publisher failed to get a pointer to the sample buffer memory", name);
 				else if(!caps_struct)
-					ROS_ERROR("JPEG publisher failed to get the internal caps structure");
+					ROS_ERROR("%s publisher failed to get the internal caps structure", name);
 				else if(!gst_structure_get_int(caps_struct, "width", &caps_width) || !gst_structure_get_int(caps_struct, "height", &caps_height) || caps_width < 1 || caps_height < 1)
-					ROS_ERROR("JPEG publisher failed to determine the sample image dimensions from the caps");
+					ROS_ERROR("%s publisher failed to determine the sample image dimensions from the caps", name);
+				else if(type != PIT_JPEG && !(caps_format = gst_structure_get_string(caps_struct, "format")))
+					ROS_ERROR("%s publisher failed to determine the sample image format from the caps", name);
 				else if(!gst_memory_map(memory, &memory_info, GST_MAP_READ))
-					ROS_ERROR("JPEG publisher failed to extract the raw data from the sample buffer memory");
+					ROS_ERROR("%s publisher failed to extract the raw data from the sample buffer memory", name);
 				else
 				{
 					// Retrieve the raw data pointer and size
 					gsize& data_size = memory_info.size;
 					guint8*& data_ptr = memory_info.data;
-					ros::Time data_stamp((pc->m_pipeline->base_time + buffer->pts) * 1e-9 + pc->m_pipeline_time_offset.toSec() + pc->m_time_offset);
-
-					// Display info about the data that the ROS publisher is receiving
-					static gint cur_caps_width = 0, cur_caps_height = 0;
-					if(cur_caps_width != caps_width || cur_caps_height != caps_height)
-					{
-						cur_caps_width = caps_width;
-						cur_caps_height = caps_height;
-						ROS_INFO("JPEG publisher is receiving %dx%d JPEG images (~%" G_GSIZE_FORMAT " bytes)", cur_caps_width, cur_caps_height, 1000 * ((data_size + 500) / 1000));
-					}
-
-					// Publish an image message
-					sensor_msgs::CompressedImagePtr image(new sensor_msgs::CompressedImage());
-					image->header.frame_id = pc->m_camera_frame;
-					image->header.stamp = data_stamp;
-					image->format = "jpeg";
-					image->data.insert(image->data.end(), data_ptr, data_ptr + data_size);
-					pc->m_pub_jpeg.publish(image);
+					ros::Time data_stamp((m_pipeline->base_time + buffer->pts) * 1e-9 + m_pipeline_time_offset.toSec() + m_time_offset);
 
 					// Publish a camera info message
-					pc->publish_camera_info(data_stamp);
+					publish_camera_info(data_stamp);
 
-					// Signal that the data flow is okay
-					flow = GST_FLOW_OK;
-
-					// Unmap the sample buffer memory
-					gst_memory_unmap(memory, &memory_info);
-				}
-			}
-		}
-
-		// Free the sample
-		gst_sample_unref(sample);
-	}
-
-	// Return the data flow state
-	return flow;
-}
-
-// New YUV image sample callback
-GstFlowReturn PepperCamera::publish_yuv_callback(GstElement* appsink, PepperCamera* pc)
-{
-	// Declare variables
-	GstFlowReturn flow = GST_FLOW_ERROR;
-
-	// Retrieve and process the sample
-	GstSample* sample;
-	g_signal_emit_by_name(appsink, "pull-sample", &sample);
-	if(!sample)
-		ROS_ERROR("YUV publisher failed to pull a sample");
-	else
-	{
-		// Retrieve and process the sample buffer
-		GstBuffer* buffer = gst_sample_get_buffer(sample);
-		GstCaps* caps = gst_sample_get_caps(sample);
-		if(!buffer)
-			ROS_ERROR("YUV publisher failed to obtain the buffer for a pulled sample");
-		else if(!caps)
-			ROS_ERROR("YUV publisher failed to obtain the caps for a pulled sample");
-		else
-		{
-			// Retrieve and process the sample buffer memory
-			guint num_memories = gst_buffer_n_memory(buffer);
-			guint num_caps_structs = gst_caps_get_size(caps);
-			if(num_memories < 1U)
-				ROS_ERROR("YUV publisher received a buffer with no memory");
-			else if(num_caps_structs < 1U)
-				ROS_ERROR("YUV publisher received a caps with no structures");
-			else
-			{
-				// One-time warnings for silently ignored memories/structures
-				if(num_memories != 1U)
-					ROS_WARN_ONCE("YUV publisher is receiving buffers with multiple memories in it => Always just taking first one");
-				if(num_caps_structs != 1U)
-					ROS_WARN_ONCE("YUV publisher is receiving caps with multiple structures in it => Always just taking first one");
-
-				// Retrieve and process the raw data inside the sample buffer memory
-				GstMemory *memory = gst_buffer_peek_memory(buffer, 0U);
-				GstStructure* caps_struct = gst_caps_get_structure(caps, 0U);
-				gint caps_width = 0, caps_height = 0;
-				const gchar* caps_format = NULL;
-				GstMapInfo memory_info;
-				if(!memory)
-					ROS_ERROR("YUV publisher failed to get a pointer to the sample buffer memory");
-				else if(!caps_struct)
-					ROS_ERROR("YUV publisher failed to get the internal caps structure");
-				else if(!gst_structure_get_int(caps_struct, "width", &caps_width) || !gst_structure_get_int(caps_struct, "height", &caps_height) || caps_width < 1 || caps_height < 1)
-					ROS_ERROR("YUV publisher failed to determine the sample image dimensions from the caps");
-				else if(!(caps_format = gst_structure_get_string(caps_struct, "format")))
-					ROS_ERROR("YUV publisher failed to determine the sample image format from the caps");
-				else if(!gst_memory_map(memory, &memory_info, GST_MAP_READ))
-					ROS_ERROR("YUV publisher failed to extract the raw data from the sample buffer memory");
-				else
-				{
-					// Retrieve the raw data pointer and size
-					gsize& data_size = memory_info.size;
-					guint8*& data_ptr = memory_info.data;
-					ros::Time data_stamp((pc->m_pipeline->base_time + buffer->pts) * 1e-9 + pc->m_pipeline_time_offset.toSec() + pc->m_time_offset);
-
-					// Display info about the data that the ROS publisher is receiving
-					static gint cur_caps_width = 0, cur_caps_height = 0;
-					static std::string cur_caps_format;
-					static gsize cur_data_size = 0U;
-					if(cur_caps_width != caps_width || cur_caps_height != caps_height || cur_caps_format != caps_format || cur_data_size != data_size)
+					// Different publishing behaviour depending on the image type
+					if(type == PIT_JPEG)
 					{
-						cur_caps_width = caps_width;
-						cur_caps_height = caps_height;
-						cur_caps_format = caps_format;
-						cur_data_size = data_size;
-						ROS_INFO("YUV publisher is receiving %dx%d %s images (%" G_GSIZE_FORMAT " bytes)", cur_caps_width, cur_caps_height, cur_caps_format.c_str(), cur_data_size);
-					}
+						// Display info about the data that the ROS publisher is receiving
+						static gint cur_caps_width = 0, cur_caps_height = 0;
+						if(cur_caps_width != caps_width || cur_caps_height != caps_height)
+						{
+							cur_caps_width = caps_width;
+							cur_caps_height = caps_height;
+							ROS_INFO("JPEG publisher is receiving %dx%d JPEG images (~%" G_GSIZE_FORMAT " bytes)", cur_caps_width, cur_caps_height, 1000 * ((data_size + 500) / 1000));
+						}
 
-					// Ensure the data size is as expected
-					gsize cur_row_size = cur_caps_width + (cur_caps_width >> 1);
-					gsize exp_data_size = cur_caps_height * cur_row_size;
-					if(cur_data_size != exp_data_size)
-						ROS_ERROR("YUV publisher received unexpected number of image bytes: %" G_GSIZE_FORMAT " (received) vs %" G_GSIZE_FORMAT " (expected)", cur_data_size, exp_data_size);
-					else
-					{
 						// Publish an image message
-						sensor_msgs::ImagePtr image(new sensor_msgs::Image());
-						image->header.frame_id = pc->m_camera_frame;
+						sensor_msgs::CompressedImagePtr image(new sensor_msgs::CompressedImage());
+						image->header.frame_id = m_camera_frame;
 						image->header.stamp = data_stamp;
-						image->width = cur_caps_width;
-						image->height = cur_caps_height;
-						image->encoding = "yuv_" + cur_caps_format;  // TODO: Have constants for this that receiving code can use as well (image_encodings.h?)
-						image->is_bigendian = false;
-						image->step = cur_row_size;
-						image->data.insert(image->data.end(), data_ptr, data_ptr + exp_data_size);
-						pc->m_pub_yuv.publish(image);
-
-						// Publish a camera info message
-						pc->publish_camera_info(data_stamp);
+						image->format = "jpeg";
+						image->data.insert(image->data.end(), data_ptr, data_ptr + data_size);
+						m_pub_jpeg.publish(image);
 
 						// Signal that the data flow is okay
 						flow = GST_FLOW_OK;
 					}
-
-					// Unmap the sample buffer memory
-					gst_memory_unmap(memory, &memory_info);
-				}
-			}
-		}
-
-		// Free the sample
-		gst_sample_unref(sample);
-	}
-
-	// Return the data flow state
-	return flow;
-}
-
-// New RGB image sample callback
-GstFlowReturn PepperCamera::publish_rgb_callback(GstElement* appsink, PepperCamera* pc)
-{
-	// Declare variables
-	GstFlowReturn flow = GST_FLOW_ERROR;
-
-	// Retrieve and process the sample
-	GstSample* sample;
-	g_signal_emit_by_name(appsink, "pull-sample", &sample);
-	if(!sample)
-		ROS_ERROR("RGB publisher failed to pull a sample");
-	else
-	{
-		// Retrieve and process the sample buffer
-		GstBuffer* buffer = gst_sample_get_buffer(sample);
-		GstCaps* caps = gst_sample_get_caps(sample);
-		if(!buffer)
-			ROS_ERROR("RGB publisher failed to obtain the buffer for a pulled sample");
-		else if(!caps)
-			ROS_ERROR("RGB publisher failed to obtain the caps for a pulled sample");
-		else
-		{
-			// Retrieve and process the sample buffer memory
-			guint num_memories = gst_buffer_n_memory(buffer);
-			guint num_caps_structs = gst_caps_get_size(caps);
-			if(num_memories < 1U)
-				ROS_ERROR("RGB publisher received a buffer with no memory");
-			else if(num_caps_structs < 1U)
-				ROS_ERROR("RGB publisher received a caps with no structures");
-			else
-			{
-				// One-time warnings for silently ignored memories/structures
-				if(num_memories != 1U)
-					ROS_WARN_ONCE("RGB publisher is receiving buffers with multiple memories in it => Always just taking first one");
-				if(num_caps_structs != 1U)
-					ROS_WARN_ONCE("RGB publisher is receiving caps with multiple structures in it => Always just taking first one");
-
-				// Retrieve and process the raw data inside the sample buffer memory
-				GstMemory *memory = gst_buffer_peek_memory(buffer, 0U);
-				GstStructure* caps_struct = gst_caps_get_structure(caps, 0U);
-				gint caps_width = 0, caps_height = 0;
-				const gchar* caps_format = NULL;
-				GstMapInfo memory_info;
-				if(!memory)
-					ROS_ERROR("RGB publisher failed to get a pointer to the sample buffer memory");
-				else if(!caps_struct)
-					ROS_ERROR("RGB publisher failed to get the internal caps structure");
-				else if(!gst_structure_get_int(caps_struct, "width", &caps_width) || !gst_structure_get_int(caps_struct, "height", &caps_height) || caps_width < 1 || caps_height < 1)
-					ROS_ERROR("RGB publisher failed to determine the sample image dimensions from the caps");
-				else if(!(caps_format = gst_structure_get_string(caps_struct, "format")))
-					ROS_ERROR("RGB publisher failed to determine the sample image format from the caps");
-				else if(!gst_memory_map(memory, &memory_info, GST_MAP_READ))
-					ROS_ERROR("RGB publisher failed to extract the raw data from the sample buffer memory");
-				else
-				{
-					// Retrieve the raw data pointer and size
-					gsize& data_size = memory_info.size;
-					guint8*& data_ptr = memory_info.data;
-					ros::Time data_stamp((pc->m_pipeline->base_time + buffer->pts) * 1e-9 + pc->m_pipeline_time_offset.toSec() + pc->m_time_offset);
-
-					// Display info about the data that the ROS publisher is receiving
-					static gint cur_caps_width = 0, cur_caps_height = 0;
-					static std::string cur_caps_format;
-					static gsize cur_data_size = 0U;
-					if(cur_caps_width != caps_width || cur_caps_height != caps_height || cur_caps_format != caps_format || cur_data_size != data_size)
+					else if(type == PIT_YUV)
 					{
-						cur_caps_width = caps_width;
-						cur_caps_height = caps_height;
-						cur_caps_format = caps_format;
-						cur_data_size = data_size;
-						ROS_INFO("RGB publisher is receiving %dx%d %s images (%" G_GSIZE_FORMAT " bytes)", cur_caps_width, cur_caps_height, cur_caps_format.c_str(), cur_data_size);
-					}
+						// Display info about the data that the ROS publisher is receiving
+						static gint cur_caps_width = 0, cur_caps_height = 0;
+						static std::string cur_caps_format;
+						static gsize cur_data_size = 0U;
+						if(cur_caps_width != caps_width || cur_caps_height != caps_height || cur_caps_format != caps_format || cur_data_size != data_size)
+						{
+							cur_caps_width = caps_width;
+							cur_caps_height = caps_height;
+							cur_caps_format = caps_format;
+							cur_data_size = data_size;
+							ROS_INFO("YUV publisher is receiving %dx%d %s images (%" G_GSIZE_FORMAT " bytes)", cur_caps_width, cur_caps_height, cur_caps_format.c_str(), cur_data_size);
+						}
 
-					// Ensure the data size is as expected
-					gsize cur_row_size = cur_caps_width * 3U;
-					gsize exp_data_size = cur_caps_height * cur_row_size;
-					if(cur_data_size != exp_data_size)
-						ROS_ERROR("RGB publisher received unexpected number of image bytes: %" G_GSIZE_FORMAT " (received) vs %" G_GSIZE_FORMAT " (expected)", cur_data_size, exp_data_size);
+						// Ensure the data size is as expected
+						gsize cur_row_size = cur_caps_width + (cur_caps_width >> 1);
+						gsize exp_data_size = cur_caps_height * cur_row_size;
+						if(cur_data_size != exp_data_size)
+							ROS_ERROR("YUV publisher received unexpected number of image bytes: %" G_GSIZE_FORMAT " (received) vs %" G_GSIZE_FORMAT " (expected)", cur_data_size, exp_data_size);
+						else
+						{
+							// Publish an image message
+							sensor_msgs::ImagePtr image(new sensor_msgs::Image());
+							image->header.frame_id = m_camera_frame;
+							image->header.stamp = data_stamp;
+							image->width = cur_caps_width;
+							image->height = cur_caps_height;
+							image->encoding = "yuv_" + cur_caps_format;  // TODO: Have constants for this that receiving code can use as well (image_encodings.h?)
+							image->is_bigendian = false;
+							image->step = cur_row_size;
+							image->data.insert(image->data.end(), data_ptr, data_ptr + exp_data_size);
+							m_pub_yuv.publish(image);
+
+							// Signal that the data flow is okay
+							flow = GST_FLOW_OK;
+						}
+					}
+					else if(type == PIT_RGB)
+					{
+						// Display info about the data that the ROS publisher is receiving
+						static gint cur_caps_width = 0, cur_caps_height = 0;
+						static std::string cur_caps_format;
+						static gsize cur_data_size = 0U;
+						if(cur_caps_width != caps_width || cur_caps_height != caps_height || cur_caps_format != caps_format || cur_data_size != data_size)
+						{
+							cur_caps_width = caps_width;
+							cur_caps_height = caps_height;
+							cur_caps_format = caps_format;
+							cur_data_size = data_size;
+							ROS_INFO("%s publisher is receiving %dx%d %s images (%" G_GSIZE_FORMAT " bytes)", name, cur_caps_width, cur_caps_height, cur_caps_format.c_str(), cur_data_size);
+						}
+
+						// Ensure the data size is as expected
+						gsize cur_row_size = cur_caps_width * 3U;
+						gsize exp_data_size = cur_caps_height * cur_row_size;
+						if(cur_data_size != exp_data_size)
+							ROS_ERROR("%s publisher received unexpected number of image bytes: %" G_GSIZE_FORMAT " (received) vs %" G_GSIZE_FORMAT " (expected)", name, cur_data_size, exp_data_size);
+						else
+						{
+							// Publish an image message
+							sensor_msgs::ImagePtr image(new sensor_msgs::Image());
+							image->header.frame_id = m_camera_frame;
+							image->header.stamp = data_stamp;
+							image->width = cur_caps_width;
+							image->height = cur_caps_height;
+							image->encoding = sensor_msgs::image_encodings::RGB8;
+							image->is_bigendian = false;
+							image->step = cur_row_size;
+							image->data.insert(image->data.end(), data_ptr, data_ptr + exp_data_size);
+							m_pub_rgb.publish(image);
+
+							// Signal that the data flow is okay
+							flow = GST_FLOW_OK;
+						}
+					}
 					else
 					{
-						// Publish an image message
-						sensor_msgs::ImagePtr image(new sensor_msgs::Image());
-						image->header.frame_id = pc->m_camera_frame;
-						image->header.stamp = data_stamp;
-						image->width = cur_caps_width;
-						image->height = cur_caps_height;
-						image->encoding = sensor_msgs::image_encodings::RGB8;
-						image->is_bigendian = false;
-						image->step = cur_row_size;
-						image->data.insert(image->data.end(), data_ptr, data_ptr + exp_data_size);
-						pc->m_pub_rgb.publish(image);
-
-						// Publish a camera info message
-						pc->publish_camera_info(data_stamp);
-
-						// Signal that the data flow is okay
-						flow = GST_FLOW_OK;
+						// This should never occur
+						ROS_ERROR("Unrecognised %s publisher type: %d ", name, (int) type);
 					}
 
 					// Unmap the sample buffer memory

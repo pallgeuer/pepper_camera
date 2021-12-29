@@ -117,6 +117,14 @@ namespace pepper_camera
 			GstElement* preview;
 		};
 
+		// Publish image type enumeration
+		enum PublishImageType
+		{
+			PIT_JPEG,
+			PIT_YUV,
+			PIT_RGB
+		};
+
 		// GStreamer variables
 		guint m_sigint_callback_id = 0U;
 		GSElements* m_elem = NULL;
@@ -130,9 +138,10 @@ namespace pepper_camera
 		static void stream_warning_callback(GstBus* bus, GstMessage* msg, PepperCamera* pc);
 		static void stream_error_callback(GstBus* bus, GstMessage* msg, PepperCamera* pc);
 		static void queue_overrun_callback(GstElement* queue, PepperCamera* pc);
-		static GstFlowReturn publish_jpeg_callback(GstElement* appsink, PepperCamera* pc);
-		static GstFlowReturn publish_yuv_callback(GstElement* appsink, PepperCamera* pc);
-		static GstFlowReturn publish_rgb_callback(GstElement* appsink, PepperCamera* pc);
+		GstFlowReturn publish_callback(GstElement* appsink, PublishImageType type, const char* name);
+		static GstFlowReturn publish_jpeg_callback(GstElement* appsink, PepperCamera* pc) { return pc->publish_callback(appsink, PIT_JPEG, "JPEG"); }
+		static GstFlowReturn publish_yuv_callback(GstElement* appsink, PepperCamera* pc) { return pc->publish_callback(appsink, PIT_YUV, "YUV"); }
+		static GstFlowReturn publish_rgb_callback(GstElement* appsink, PepperCamera* pc) { return pc->publish_callback(appsink, PIT_RGB, "RGB"); }
 
 		// GStreamer utilities
 		void configure_queue(GstElement* queue);
