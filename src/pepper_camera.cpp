@@ -142,6 +142,8 @@ bool PepperCamera::configure()
 		m_camera_name = "top";
 	if(m_camera_frame.empty())
 		m_camera_frame = "/camera_" + m_camera_name;
+	if(m_camera_info_url.empty())
+		m_camera_info_url = "package://pepper_camera/calibration/pepper_" + m_camera_name + ".yaml";
 
 	// Return success
 	return true;
@@ -184,8 +186,6 @@ bool PepperCamera::init_stream()
 		if(m_camera_info_manager.validateURL(m_camera_info_url))
 			camera_info_url = m_camera_info_url;
 		m_camera_info_manager.loadCameraInfo(m_camera_info_url);
-		if(!m_camera_info_url.empty())
-			ROS_INFO("Loaded camera calibration info from %s", m_camera_info_url.c_str());
 		m_pub_camera_info = m_nh_interface.advertise<sensor_msgs::CameraInfo>(camera_topic_base + "/camera_info", m_publish_queue_size);
 		ROS_INFO("Configured a ROS publisher queue length of %d", m_publish_queue_size);
 	}
