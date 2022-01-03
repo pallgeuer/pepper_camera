@@ -22,7 +22,6 @@ using namespace pepper_camera;
 
 // Constructor
 PepperCamera::PepperCamera(ros::NodeHandle& nh_interface, ros::NodeHandle& nh_param) :
-	m_pending_reconfigure(false),
 	m_nh_interface(nh_interface),
 	m_nh_param(nh_param),
 	m_camera_info_manager(m_nh_interface),
@@ -531,12 +530,12 @@ bool PepperCamera::init_stream()
 	m_main_loop = g_main_loop_new(NULL, FALSE);
 
 	// Listen to selected messages on the bus
-	GstBus* bus = gst_element_get_bus(m_pipeline);
-	gst_bus_add_signal_watch(bus);
-	g_signal_connect(G_OBJECT(bus), "message::eos", G_CALLBACK(PepperCamera::stream_eos_callback), this);
-	g_signal_connect(G_OBJECT(bus), "message::warning", G_CALLBACK(PepperCamera::stream_warning_callback), this);
-	g_signal_connect(G_OBJECT(bus), "message::error", G_CALLBACK(PepperCamera::stream_error_callback), this);
-	gst_object_unref(bus);
+	m_bus = gst_element_get_bus(m_pipeline);
+	gst_bus_add_signal_watch(m_bus);
+	g_signal_connect(G_OBJECT(m_bus), "message::eos", G_CALLBACK(PepperCamera::stream_eos_callback), this);
+	g_signal_connect(G_OBJECT(m_bus), "message::warning", G_CALLBACK(PepperCamera::stream_warning_callback), this);
+	g_signal_connect(G_OBJECT(m_bus), "message::error", G_CALLBACK(PepperCamera::stream_error_callback), this);
+	g_signal_connect(G_OBJECT(m_bus), "message::state-changed", G_CALLBACK(PepperCamera::stream_state_changed_callback), this);
 
 	// Add unix signal handler
 	m_sigint_callback_id = g_unix_signal_add(SIGINT, PC_G_SOURCE_FUNC(PepperCamera::sigint_callback), this);
@@ -591,6 +590,7 @@ bool PepperCamera::run_stream()
 	m_srv_reconfigure = m_nh_interface.advertiseService("camera/" + m_config.camera_name + "/reconfigure", &PepperCamera::handle_reconfigure, this);
 
 	// Run the main loop
+	ROS_INFO("Waiting for UDP data to arrive...");
 	g_main_loop_run(m_main_loop);
 
 	// Unadvertise the reconfigure service
@@ -611,6 +611,14 @@ void PepperCamera::cleanup_stream()
 	{
 		g_source_remove(m_sigint_callback_id);
 		m_sigint_callback_id = 0U;
+	}
+
+	// Remove the bus signal watch
+	if(m_bus != NULL)
+	{
+		gst_bus_remove_signal_watch(m_bus);
+		gst_object_unref(m_bus);
+		m_bus = NULL;
 	}
 
 	// Delete the main loop
@@ -827,6 +835,19 @@ void PepperCamera::stream_error_callback(GstBus* bus, GstMessage* msg, PepperCam
 
 	// Cancel the main loop
 	pc->cancel_main_loop();
+}
+
+// GStreamer state changed callback
+void PepperCamera::stream_state_changed_callback(GstBus* bus, GstMessage* msg, PepperCamera* pc)
+{
+	// Wait for the pipeline to enter the PLAYING state
+	if(msg->src == GST_OBJECT_CAST(pc->m_pipeline))
+	{
+		GstState new_state;
+		gst_message_parse_state_changed(msg, NULL, &new_state, NULL);
+		if(new_state == GST_STATE_PLAYING)
+			ROS_INFO("Started receiving UDP camera frames");
+	}
 }
 
 // Queue overrun callback

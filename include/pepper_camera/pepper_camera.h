@@ -78,7 +78,7 @@ namespace pepper_camera
 		// Configuration variables
 		Config m_config;
 		std_msgs::UInt32 m_config_id;
-		bool m_pending_reconfigure;
+		bool m_pending_reconfigure = false;
 
 		// Configuration utilities
 		bool configure(Config& config) const;
@@ -155,6 +155,7 @@ namespace pepper_camera
 		guint m_sigint_callback_id = 0U;
 		GSElements* m_elem = NULL;
 		GstElement* m_pipeline = NULL;
+		GstBus* m_bus = NULL;
 		bool m_pipeline_stalled = false;
 		GMainLoop* m_main_loop = NULL;
 
@@ -163,6 +164,7 @@ namespace pepper_camera
 		static void stream_eos_callback(GstBus* bus, GstMessage* msg, PepperCamera* pc);
 		static void stream_warning_callback(GstBus* bus, GstMessage* msg, PepperCamera* pc);
 		static void stream_error_callback(GstBus* bus, GstMessage* msg, PepperCamera* pc);
+		static void stream_state_changed_callback(GstBus* bus, GstMessage* msg, PepperCamera* pc);
 		static void queue_overrun_callback(GstElement* queue, PepperCamera* pc);
 		GstFlowReturn publish_callback(GstElement* appsink, PublishImageType type, const char* name);
 		static GstFlowReturn publish_jpeg_callback(GstElement* appsink, PepperCamera* pc) { return pc->publish_callback(appsink, PIT_JPEG, "JPEG"); }
