@@ -3,6 +3,7 @@ project(pepper_camera)
 
 find_package(catkin REQUIRED COMPONENTS
 	roscpp
+	message_generation
 	camera_info_manager
 	image_transport
 	sensor_msgs
@@ -10,6 +11,14 @@ find_package(catkin REQUIRED COMPONENTS
 
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(GSTREAMER REQUIRED gstreamer-1.0)
+
+add_service_files(FILES
+	Reconfigure.srv
+)
+
+generate_messages(DEPENDENCIES
+	std_msgs
+)
 
 catkin_package(
 	INCLUDE_DIRS

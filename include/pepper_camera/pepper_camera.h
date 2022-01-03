@@ -5,8 +5,12 @@
 #ifndef PEPPER_CAMERA_H
 #define PEPPER_CAMERA_H
 
+// Includes - Local
+#include <pepper_camera/Reconfigure.h>
+
 // Includes - ROS
 #include <ros/ros.h>
+#include <std_msgs/UInt32.h>
 #include <image_transport/image_transport.h>
 #include <camera_info_manager/camera_info_manager.h>
 
@@ -42,30 +46,48 @@ namespace pepper_camera
 		void cleanup_stream();
 
 	private:
-		// Configuration
-		int m_port;
-		bool m_auto_retry;
-		bool m_publish_jpeg;
-		bool m_publish_yuv;
-		bool m_publish_rgb;
-		std::string m_record_jpegs;
-		int m_record_jpegs_max;
-		std::string m_record_mjpeg;
-		std::string m_record_h264;
-		int m_record_h264_bitrate;
-		int m_record_h264_speed;
-		std::string m_record_h264_profile;
-		bool m_preview;
-		std::string m_camera_name;
-		std::string m_camera_frame;
-		std::string m_camera_info_url;
-		double m_time_offset;
-		int m_queue_size_mb;
-		int m_publish_queue_size;
+		// Configuration variables class
+		class Config {
+		public:
+			Config() { reset(); }
+			explicit Config(bool init) { if(init) reset(); }
+			void reset();
+			bool operator==(const Config& other);
+			bool operator!=(const Config& other) { return !operator==(other); }
+			int port;
+			bool auto_retry;
+			bool publish_jpeg;
+			bool publish_yuv;
+			bool publish_rgb;
+			std::string record_jpegs;
+			int record_jpegs_max;
+			std::string record_mjpeg;
+			std::string record_h264;
+			int record_h264_bitrate;
+			int record_h264_speed;
+			std::string record_h264_profile;
+			bool preview;
+			std::string camera_name;
+			std::string camera_frame;
+			std::string camera_info_url;
+			double time_offset;
+			int queue_size_mb;
+			int publish_queue_size;
+		};
+
+		// Configuration variables
+		Config m_config;
+		std_msgs::UInt32 m_config_id;
+		bool m_pending_reconfigure;
+
+		// Configuration utilities
+		bool configure(Config& config) const;
 
 		// ROS variables
 		ros::NodeHandle& m_nh_interface;
 		ros::NodeHandle& m_nh_param;
+		ros::Publisher m_pub_config_id;
+		ros::ServiceServer m_srv_reconfigure;
 		ros::Time m_pipeline_time_offset;
 		camera_info_manager::CameraInfoManager m_camera_info_manager;
 		image_transport::ImageTransport m_image_transport;
@@ -74,6 +96,9 @@ namespace pepper_camera
 		ros::Publisher m_pub_jpeg;
 		ros::Publisher m_pub_yuv;
 		image_transport::Publisher m_pub_rgb;
+
+		// ROS callbacks
+		bool handle_reconfigure(Reconfigure::Request& req, Reconfigure::Response& res);
 
 		// ROS utilities
 		void publish_camera_info(const ros::Time& stamp);
@@ -151,6 +176,8 @@ namespace pepper_camera
 		static gboolean gst_bin_add_ref(GstBin *bin, GstElement *element);
 		static void gst_bin_add_many_ref(GstBin *bin, GstElement *element1, ...) G_GNUC_NULL_TERMINATED;
 		static void gst_object_unref_safe(GstObject** object_ptr);
+		void post_cancel_main_loop();
+		static gboolean cancel_main_loop_callback(PepperCamera* pc);
 		void cancel_main_loop();
 		void quit_main_loop();
 

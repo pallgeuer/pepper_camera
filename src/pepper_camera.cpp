@@ -22,13 +22,12 @@ using namespace pepper_camera;
 
 // Constructor
 PepperCamera::PepperCamera(ros::NodeHandle& nh_interface, ros::NodeHandle& nh_param) :
+	m_pending_reconfigure(false),
 	m_nh_interface(nh_interface),
 	m_nh_param(nh_param),
 	m_camera_info_manager(m_nh_interface),
 	m_image_transport(m_nh_interface)
 {
-	// Reset the configuration variables
-	reset_config();
 }
 
 //
@@ -38,36 +37,47 @@ PepperCamera::PepperCamera(ros::NodeHandle& nh_interface, ros::NodeHandle& nh_pa
 // Run the Pepper camera loop
 void PepperCamera::run()
 {
+	// Advertise the config ID publisher
+	m_pub_config_id = m_nh_interface.advertise<std_msgs::UInt32>("camera/config_id", 1, true);
+	m_pub_config_id.publish(m_config_id);
+
 	// Configure and run the required pipeline
 	while(ros::ok())
 	{
+		m_pending_reconfigure = false;
 		if(!configure())
-		{
-			ROS_FATAL("Failed to configure Pepper camera class");
-			break;
-		}
-		if(!init_stream())
-		{
-			ROS_FATAL("Failed to initialise Pepper camera stream");
-			cleanup_stream();
-			break;
-		}
-		if(!run_stream())
-		{
-			ROS_FATAL("Failed to run Pepper camera stream");
-			cleanup_stream();
-			break;
-		}
-		cleanup_stream();
-		if(m_auto_retry)
-		{
-			ROS_INFO("Retrying Pepper camera stream...");
-			std::this_thread::sleep_for(std::chrono::seconds(1));
-		}
+			ROS_FATAL("Failed to configure Pepper camera stream");
 		else
-			break;
+		{
+			bool ran_stream = false;
+			if(!init_stream())
+				ROS_FATAL("Failed to initialise Pepper camera stream");
+			else if(!run_stream())
+				ROS_FATAL("Failed to run Pepper camera stream");
+			else
+				ran_stream = true;
+			cleanup_stream();
+			if(ran_stream)
+			{
+				if(m_pending_reconfigure)
+				{
+					ROS_INFO("Reconfiguring Pepper camera stream...");
+					continue;
+				}
+				else if(m_config.auto_retry)
+				{
+					ROS_INFO("Retrying Pepper camera stream...");
+					std::this_thread::sleep_for(std::chrono::seconds(1));
+					continue;
+				}
+			}
+		}
+		break;
 	}
 	ROS_INFO("Pepper camera stream has exited");
+
+	// Shut down the config ID publisher
+	m_pub_config_id.shutdown();
 }
 
 //
@@ -75,75 +85,115 @@ void PepperCamera::run()
 //
 
 // Reset the configuration variables
-void PepperCamera::reset_config()
+void PepperCamera::Config::reset()
 {
 	// Reset all configuration variables to their default values
-	m_port = 3016;                                   // Port to listen for UDP packets
-	m_auto_retry = false;                            // Whether to auto-retry the camera pipeline if it exits
-	m_publish_jpeg = false;                          // Whether to publish JPEG images
-	m_publish_yuv = false;                           // Whether to publish YUV images
-	m_publish_rgb = true;                            // Whether to publish RGB images
-	m_record_jpegs.clear();                          // Format: path/to/filename%05d.jpg
-	m_record_jpegs_max = 1000;                       // Maximum number of JPEGs to save before the oldest are deleted again (0 = Unlimited)
-	m_record_mjpeg.clear();                          // Format: path/to/filename.mkv
-	m_record_h264.clear();                           // Format: path/to/filename.mkv
-	m_record_h264_bitrate = 1500;                    // Units: kbit/sec
-	m_record_h264_speed = 5;                         // Allowed values: gst-inspect-1.0 x264enc | grep 'speed-preset' -A 15
-	m_record_h264_profile = "constrained-baseline";  // Allowed values: gst-inspect-1.0 x264enc | grep 'profile:'
-	m_preview = false;                               // Whether to show a preview window
-	m_camera_name.clear();                           // Camera name to use (e.g. for topics, camera info manager)
-	m_camera_frame.clear();                          // Camera TF frame (e.g. /camera_top)
-	m_camera_info_url.clear();                       // URL specifying the camera info file to load (see https://docs.ros.org/en/api/camera_info_manager/html/classcamera__info__manager_1_1CameraInfoManager.html)
-	m_time_offset = 0.0;                             // Fixed time offset to apply to the camera frame timestamps (+/- seconds)
-	m_queue_size_mb = 30;                            // Queue byte sizes to use (MB)
-	m_publish_queue_size = 3;                        // Queue size to use for the ROS publishers
+	port = 3016;                                   // Port to listen for UDP packets
+	auto_retry = false;                            // Whether to auto-retry the camera pipeline if it exits
+	publish_jpeg = false;                          // Whether to publish JPEG images
+	publish_yuv = false;                           // Whether to publish YUV images
+	publish_rgb = true;                            // Whether to publish RGB images
+	record_jpegs.clear();                          // Format: path/to/filename%05d.jpg
+	record_jpegs_max = 1000;                       // Maximum number of JPEGs to save before the oldest are deleted again (0 = Unlimited)
+	record_mjpeg.clear();                          // Format: path/to/filename.mkv
+	record_h264.clear();                           // Format: path/to/filename.mkv
+	record_h264_bitrate = 1500;                    // Units: kbit/sec
+	record_h264_speed = 5;                         // Allowed values: gst-inspect-1.0 x264enc | grep 'speed-preset' -A 15
+	record_h264_profile = "constrained-baseline";  // Allowed values: gst-inspect-1.0 x264enc | grep 'profile:'
+	preview = false;                               // Whether to show a preview window
+	camera_name.clear();                           // Camera name to use (e.g. for topics, camera info manager)
+	camera_frame.clear();                          // Camera TF frame (e.g. /camera_top)
+	camera_info_url.clear();                       // URL specifying the camera info file to load (see https://docs.ros.org/en/api/camera_info_manager/html/classcamera__info__manager_1_1CameraInfoManager.html)
+	time_offset = 0.0;                             // Fixed time offset to apply to the camera frame timestamps (+/- seconds)
+	queue_size_mb = 30;                            // Queue byte sizes to use (MB)
+	publish_queue_size = 3;                        // Queue size to use for the ROS publishers
+}
+
+// Equality operator for configuration variables
+bool PepperCamera::Config::operator==(const Config& other)
+{
+	return (
+		port == other.port &&
+		auto_retry == other.auto_retry &&
+		publish_jpeg == other.publish_jpeg &&
+		publish_yuv == other.publish_yuv &&
+		publish_rgb == other.publish_rgb &&
+		record_jpegs == other.record_jpegs &&
+		record_jpegs_max == other.record_jpegs_max &&
+		record_mjpeg == other.record_mjpeg &&
+		record_h264 == other.record_h264 &&
+		record_h264_bitrate == other.record_h264_bitrate &&
+		record_h264_speed == other.record_h264_speed &&
+		record_h264_profile == other.record_h264_profile &&
+		preview == other.preview &&
+		camera_name == other.camera_name &&
+		camera_frame == other.camera_frame &&
+		camera_info_url == other.camera_info_url &&
+		time_offset == other.time_offset &&
+		queue_size_mb == other.queue_size_mb &&
+		publish_queue_size == other.publish_queue_size
+	);
+}
+
+// Reset the configuration variables
+void PepperCamera::reset_config()
+{
+	// Reset the configuration variables
+	m_config.reset();
 }
 
 // Configure the Pepper camera loop
 bool PepperCamera::configure()
 {
-	// Reset the current configuration to default values
-	reset_config();
+	// Update the configuration variables
+	return configure(m_config);
+}
+
+// Configure the Pepper camera loop (implementation)
+bool PepperCamera::configure(Config& config) const
+{
+	// Reset configuration to default values
+	config.reset();
 
 	// Customise configuration variables based on ROS parameters
-	m_nh_param.getParam("port", m_port);
-	m_nh_param.getParam("auto_retry", m_auto_retry);
-	m_nh_param.getParam("publish_jpeg", m_publish_jpeg);
-	m_nh_param.getParam("publish_yuv", m_publish_yuv);
-	m_nh_param.getParam("publish_rgb", m_publish_rgb);
-	m_nh_param.getParam("record_jpegs_path", m_record_jpegs);
-	m_nh_param.getParam("record_jpegs_max", m_record_jpegs_max);
-	m_nh_param.getParam("record_mjpeg_path", m_record_mjpeg);
-	m_nh_param.getParam("record_h264_path", m_record_h264);
-	m_nh_param.getParam("record_h264_bitrate", m_record_h264_bitrate);
-	m_nh_param.getParam("record_h264_speed", m_record_h264_speed);
-	m_nh_param.getParam("record_h264_profile", m_record_h264_profile);
-	m_nh_param.getParam("preview", m_preview);
-	m_nh_param.getParam("camera_name", m_camera_name);
-	m_nh_param.getParam("camera_frame", m_camera_frame);
-	m_nh_param.getParam("camera_info_url", m_camera_info_url);
-	m_nh_param.getParam("time_offset", m_time_offset);
-	m_nh_param.getParam("queue_size_mb", m_queue_size_mb);
-	m_nh_param.getParam("publish_queue_size", m_publish_queue_size);
+	m_nh_param.getParam("port", config.port);
+	m_nh_param.getParam("auto_retry", config.auto_retry);
+	m_nh_param.getParam("publish_jpeg", config.publish_jpeg);
+	m_nh_param.getParam("publish_yuv", config.publish_yuv);
+	m_nh_param.getParam("publish_rgb", config.publish_rgb);
+	m_nh_param.getParam("record_jpegs_path", config.record_jpegs);
+	m_nh_param.getParam("record_jpegs_max", config.record_jpegs_max);
+	m_nh_param.getParam("record_mjpeg_path", config.record_mjpeg);
+	m_nh_param.getParam("record_h264_path", config.record_h264);
+	m_nh_param.getParam("record_h264_bitrate", config.record_h264_bitrate);
+	m_nh_param.getParam("record_h264_speed", config.record_h264_speed);
+	m_nh_param.getParam("record_h264_profile", config.record_h264_profile);
+	m_nh_param.getParam("preview", config.preview);
+	m_nh_param.getParam("camera_name", config.camera_name);
+	m_nh_param.getParam("camera_frame", config.camera_frame);
+	m_nh_param.getParam("camera_info_url", config.camera_info_url);
+	m_nh_param.getParam("time_offset", config.time_offset);
+	m_nh_param.getParam("queue_size_mb", config.queue_size_mb);
+	m_nh_param.getParam("publish_queue_size", config.publish_queue_size);
 
 	// Ensure the recording paths have the appropriate extension
-	ensure_extension(m_record_jpegs, ".jpg");
-	ensure_extension(m_record_mjpeg, ".mkv");
-	ensure_extension(m_record_h264, ".mkv");
+	ensure_extension(config.record_jpegs, ".jpg");
+	ensure_extension(config.record_mjpeg, ".mkv");
+	ensure_extension(config.record_h264, ".mkv");
 
 	// Range checking
-	m_record_jpegs_max = std::max(m_record_jpegs_max, 0);
-	m_record_h264_bitrate = std::max(m_record_h264_bitrate, 50);
-	m_queue_size_mb = std::max(m_queue_size_mb, 1);
-	m_publish_queue_size = std::max(m_publish_queue_size, 1);
+	config.record_jpegs_max = std::max(config.record_jpegs_max, 0);
+	config.record_h264_bitrate = std::max(config.record_h264_bitrate, 50);
+	config.queue_size_mb = std::max(config.queue_size_mb, 1);
+	config.publish_queue_size = std::max(config.publish_queue_size, 1);
 
 	// Dynamic default values
-	if(m_camera_name.empty())
-		m_camera_name = "top";
-	if(m_camera_frame.empty())
-		m_camera_frame = "/camera_" + m_camera_name;
-	if(m_camera_info_url.empty())
-		m_camera_info_url = "package://pepper_camera/calibration/pepper_" + m_camera_name + ".yaml";
+	if(config.camera_name.empty())
+		config.camera_name = "top";
+	if(config.camera_frame.empty())
+		config.camera_frame = "/camera_" + config.camera_name;
+	if(config.camera_info_url.empty())
+		config.camera_info_url = "package://pepper_camera/calibration/pepper_" + config.camera_name + ".yaml";
 
 	// Return success
 	return true;
@@ -167,35 +217,35 @@ bool PepperCamera::init_stream()
 	}
 
 	// Flags whether certain parts of the pipeline are required
-	bool record_jpegs = !m_record_jpegs.empty();
-	bool record_mjpeg = !m_record_mjpeg.empty();
-	bool record_h264 = !m_record_h264.empty();
-	int tee_yuv_count = m_publish_yuv + m_publish_rgb + record_h264 + m_preview;
+	bool record_jpegs = !m_config.record_jpegs.empty();
+	bool record_mjpeg = !m_config.record_mjpeg.empty();
+	bool record_h264 = !m_config.record_h264.empty();
+	int tee_yuv_count = m_config.publish_yuv + m_config.publish_rgb + record_h264 + m_config.preview;
 	bool have_tee_yuv = (tee_yuv_count >= 2);
 	bool have_jpegdec = (tee_yuv_count >= 1);
-	int tee_jpeg_count = m_publish_jpeg + record_jpegs + record_mjpeg + have_jpegdec;
+	int tee_jpeg_count = m_config.publish_jpeg + record_jpegs + record_mjpeg + have_jpegdec;
 	bool have_tee_jpeg = (tee_jpeg_count >= 2);
 	bool have_inspect = (tee_jpeg_count < 1);
 
 	// Advertise ROS interface
-	std::string camera_topic_base = "camera/" + m_camera_name;
-	if(m_publish_jpeg || m_publish_yuv || m_publish_rgb)
+	std::string camera_base = "camera/" + m_config.camera_name;
+	if(m_config.publish_jpeg || m_config.publish_yuv || m_config.publish_rgb)
 	{
-		m_camera_info_manager.setCameraName(m_camera_name);
+		m_camera_info_manager.setCameraName(m_config.camera_name);
 		std::string camera_info_url;
-		if(m_camera_info_manager.validateURL(m_camera_info_url))
-			camera_info_url = m_camera_info_url;
-		m_camera_info_manager.loadCameraInfo(m_camera_info_url);
-		m_pub_camera_info = m_nh_interface.advertise<sensor_msgs::CameraInfo>(camera_topic_base + "/camera_info", m_publish_queue_size);
-		ROS_INFO("Configured a ROS publisher queue length of %d", m_publish_queue_size);
+		if(m_camera_info_manager.validateURL(m_config.camera_info_url))
+			camera_info_url = m_config.camera_info_url;
+		m_camera_info_manager.loadCameraInfo(m_config.camera_info_url);
+		m_pub_camera_info = m_nh_interface.advertise<sensor_msgs::CameraInfo>(camera_base + "/camera_info", m_config.publish_queue_size);
+		ROS_INFO("Configured a ROS publisher queue length of %d", m_config.publish_queue_size);
 	}
 	m_pub_camera_info_stamp.fromNSec(0);
-	if(m_publish_jpeg)
-		m_pub_jpeg = m_nh_interface.advertise<sensor_msgs::CompressedImage>(camera_topic_base + "/jpeg/compressed", m_publish_queue_size);
-	if(m_publish_yuv)
-		m_pub_yuv = m_nh_interface.advertise<sensor_msgs::Image>(camera_topic_base + "/yuv", m_publish_queue_size);
-	if(m_publish_rgb)
-		m_pub_rgb = m_image_transport.advertise(camera_topic_base + "/rgb", m_publish_queue_size);
+	if(m_config.publish_jpeg)
+		m_pub_jpeg = m_nh_interface.advertise<sensor_msgs::CompressedImage>(camera_base + "/jpeg/compressed", m_config.publish_queue_size);
+	if(m_config.publish_yuv)
+		m_pub_yuv = m_nh_interface.advertise<sensor_msgs::Image>(camera_base + "/yuv", m_config.publish_queue_size);
+	if(m_config.publish_rgb)
+		m_pub_rgb = m_image_transport.advertise(camera_base + "/rgb", m_config.publish_queue_size);
 
 	// Create the required pipeline elements
 	bool any_elem_invalid = false;
@@ -205,7 +255,7 @@ bool PepperCamera::init_stream()
 	if(have_tee_jpeg)
 	{
 		any_elem_invalid |= !(m_elem->tee_jpeg = gst_element_factory_make("tee", "tee_jpeg"));
-		if(m_publish_jpeg)
+		if(m_config.publish_jpeg)
 			any_elem_invalid |= !(m_elem->publish_jpeg_queue = gst_element_factory_make("queue", "publish_jpeg_queue"));
 		if(record_jpegs)
 			any_elem_invalid |= !(m_elem->record_jpegs_queue = gst_element_factory_make("queue", "record_jpegs_queue"));
@@ -214,7 +264,7 @@ bool PepperCamera::init_stream()
 		if(have_jpegdec)
 			any_elem_invalid |= !(m_elem->jpegdec_queue = gst_element_factory_make("queue", "jpegdec_queue"));
 	}
-	if(m_publish_jpeg)
+	if(m_config.publish_jpeg)
 		any_elem_invalid |= !(m_elem->publish_jpeg = gst_element_factory_make("appsink", "publish_jpeg"));
 	if(record_jpegs)
 		any_elem_invalid |= !(m_elem->record_jpegs = gst_element_factory_make("multifilesink", "record_jpegs"));
@@ -228,18 +278,18 @@ bool PepperCamera::init_stream()
 	if(have_tee_yuv)
 	{
 		any_elem_invalid |= !(m_elem->tee_yuv = gst_element_factory_make("tee", "tee_yuv"));
-		if(m_publish_yuv)
+		if(m_config.publish_yuv)
 			any_elem_invalid |= !(m_elem->publish_yuv_queue = gst_element_factory_make("queue", "publish_yuv_queue"));
-		if(m_publish_rgb)
+		if(m_config.publish_rgb)
 			any_elem_invalid |= !(m_elem->publish_rgb_queue = gst_element_factory_make("queue", "publish_rgb_queue"));
 		if(record_h264)
 			any_elem_invalid |= !(m_elem->record_h264_queue = gst_element_factory_make("queue", "record_h264_queue"));
-		if(m_preview)
+		if(m_config.preview)
 			any_elem_invalid |= !(m_elem->preview_queue = gst_element_factory_make("queue", "preview_queue"));
 	}
-	if(m_publish_yuv)
+	if(m_config.publish_yuv)
 		any_elem_invalid |= !(m_elem->publish_yuv = gst_element_factory_make("appsink", "publish_yuv"));
-	if(m_publish_rgb)
+	if(m_config.publish_rgb)
 	{
 		any_elem_invalid |= !(m_elem->publish_rgb_convert = gst_element_factory_make("videoconvert", "publish_rgb_convert"));
 		any_elem_invalid |= !(m_elem->publish_rgb = gst_element_factory_make("appsink", "publish_rgb"));
@@ -250,7 +300,7 @@ bool PepperCamera::init_stream()
 		any_elem_invalid |= !(m_elem->record_h264_mux = gst_element_factory_make("matroskamux", "record_h264_mux"));
 		any_elem_invalid |= !(m_elem->record_h264 = gst_element_factory_make("filesink", "record_h264"));
 	}
-	if(m_preview)
+	if(m_config.preview)
 		any_elem_invalid |= !(m_elem->preview = gst_element_factory_make("fpsdisplaysink", "preview"));
 	if(have_inspect)
 		any_elem_invalid |= !(m_elem->inspect = gst_element_factory_make("fakesink", "inspect"));
@@ -269,7 +319,7 @@ bool PepperCamera::init_stream()
 
 	// Configure/add the UDP source
 	GstCaps* udpsrc_caps = gst_caps_new_simple("application/x-rtp", "encoding-name", G_TYPE_STRING, "JPEG", NULL);
-	g_object_set(m_elem->udpsrc, "port", (gint) m_port, "caps", udpsrc_caps, NULL);
+	g_object_set(m_elem->udpsrc, "port", (gint) m_config.port, "caps", udpsrc_caps, NULL);
 	gst_caps_unref(udpsrc_caps);
 	gst_bin_add_many_ref(pipeline_bin, m_elem->udpsrc, m_elem->rtpjpegdepay, NULL);
 
@@ -292,7 +342,7 @@ bool PepperCamera::init_stream()
 	if(m_elem->record_jpegs)
 	{
 		configure_queue(m_elem->record_jpegs_queue);
-		g_object_set(m_elem->record_jpegs, "location", m_record_jpegs.c_str(), "index", (gint) 1, "max-files", (guint) m_record_jpegs_max, "sync", FALSE, NULL);
+		g_object_set(m_elem->record_jpegs, "location", m_config.record_jpegs.c_str(), "index", (gint) 1, "max-files", (guint) m_config.record_jpegs_max, "sync", FALSE, NULL);
 		gst_bin_add_many_ref(pipeline_bin, m_elem->record_jpegs, m_elem->record_jpegs_queue, NULL);
 	}
 
@@ -300,7 +350,7 @@ bool PepperCamera::init_stream()
 	if(m_elem->record_mjpeg)
 	{
 		configure_queue(m_elem->record_mjpeg_queue);
-		g_object_set(m_elem->record_mjpeg, "location", m_record_mjpeg.c_str(), "sync", FALSE, NULL);
+		g_object_set(m_elem->record_mjpeg, "location", m_config.record_mjpeg.c_str(), "sync", FALSE, NULL);
 		gst_bin_add_many_ref(pipeline_bin, m_elem->record_mjpeg_mux, m_elem->record_mjpeg, m_elem->record_mjpeg_queue, NULL);
 	}
 
@@ -341,8 +391,8 @@ bool PepperCamera::init_stream()
 	if(m_elem->record_h264)
 	{
 		configure_queue(m_elem->record_h264_queue);
-		g_object_set(m_elem->record_h264_enc, "pass", 0, "bitrate", (guint) m_record_h264_bitrate, "speed-preset", m_record_h264_speed, NULL);
-		g_object_set(m_elem->record_h264, "location", m_record_h264.c_str(), "sync", FALSE, NULL);
+		g_object_set(m_elem->record_h264_enc, "pass", 0, "bitrate", (guint) m_config.record_h264_bitrate, "speed-preset", m_config.record_h264_speed, NULL);
+		g_object_set(m_elem->record_h264, "location", m_config.record_h264.c_str(), "sync", FALSE, NULL);
 		gst_bin_add_many_ref(pipeline_bin, m_elem->record_h264_enc, m_elem->record_h264_mux, m_elem->record_h264, m_elem->record_h264_queue, NULL);
 	}
 
@@ -363,7 +413,7 @@ bool PepperCamera::init_stream()
 	}
 
 	// Display selected configuration information
-	ROS_INFO_COND(m_elem->tee_jpeg || m_elem->tee_yuv, "Configured a GStreamer queue size of %dMB", m_queue_size_mb);
+	ROS_INFO_COND(m_elem->tee_jpeg || m_elem->tee_yuv, "Configured a GStreamer queue size of %dMB", m_config.queue_size_mb);
 
 	// Link the UDP source
 	int link_success = TRUE;
@@ -439,7 +489,7 @@ bool PepperCamera::init_stream()
 	// Link the H264 recorder
 	if(m_elem->record_h264)
 	{
-		GstCaps* record_h264_caps = gst_caps_new_simple("video/x-h264", "stream-format", G_TYPE_STRING, "avc", "profile", G_TYPE_STRING, m_record_h264_profile.c_str(), NULL);
+		GstCaps* record_h264_caps = gst_caps_new_simple("video/x-h264", "stream-format", G_TYPE_STRING, "avc", "profile", G_TYPE_STRING, m_config.record_h264_profile.c_str(), NULL);
 		link_success &= gst_element_link_filtered(m_elem->record_h264_enc, m_elem->record_h264_mux, record_h264_caps);
 		gst_caps_unref(record_h264_caps);
 		link_success &= gst_element_link(m_elem->record_h264_mux, m_elem->record_h264);
@@ -508,22 +558,22 @@ bool PepperCamera::run_stream()
 {
 	// Summarise the pipeline that's about to run
 	ROS_INFO("Running Pepper camera stream...");
-	ROS_INFO("Listening to UDP packets on port %d", m_port);
-	ROS_INFO("Streaming %s camera (TF frame: %s)", m_camera_name.c_str(), m_camera_frame.c_str());
-	ROS_INFO_COND(m_time_offset != 0.0, "Applying frame timestamp offset of %+.3fs", m_time_offset);
+	ROS_INFO("Listening to UDP packets on port %d", m_config.port);
+	ROS_INFO("Streaming %s camera (TF frame: %s)", m_config.camera_name.c_str(), m_config.camera_frame.c_str());
+	ROS_INFO_COND(m_config.time_offset != 0.0, "Applying frame timestamp offset of %+.3fs", m_config.time_offset);
 	ROS_INFO_COND(m_elem->publish_jpeg || m_elem->publish_yuv || m_elem->publish_rgb, "Publishing camera info on topic: %s", m_pub_camera_info.getTopic().c_str());
 	ROS_INFO_COND(m_elem->publish_jpeg, "Publishing JPEG images on topic: %s", m_pub_jpeg.getTopic().c_str());
 	ROS_INFO_COND(m_elem->publish_yuv, "Publishing YUV images on topic: %s", m_pub_yuv.getTopic().c_str());
 	ROS_INFO_COND(m_elem->publish_rgb, "Publishing RGB images on topic: %s", m_pub_rgb.getTopic().c_str());
 	if(m_elem->record_jpegs)
 	{
-		if(m_record_jpegs_max == 0)
-			ROS_INFO("Recording unlimited JPEG frames to: %s", m_record_jpegs.c_str());
+		if(m_config.record_jpegs_max == 0)
+			ROS_INFO("Recording unlimited JPEG frames to: %s", m_config.record_jpegs.c_str());
 		else
-			ROS_INFO("Recording latest %d JPEG frames to: %s", m_record_jpegs_max, m_record_jpegs.c_str());
+			ROS_INFO("Recording latest %d JPEG frames to: %s", m_config.record_jpegs_max, m_config.record_jpegs.c_str());
 	}
-	ROS_INFO_COND(m_elem->record_mjpeg, "Recording MJPEG video to: %s", m_record_mjpeg.c_str());
-	ROS_INFO_COND(m_elem->record_h264, "Recording H264 video to: %s", m_record_h264.c_str());
+	ROS_INFO_COND(m_elem->record_mjpeg, "Recording MJPEG video to: %s", m_config.record_mjpeg.c_str());
+	ROS_INFO_COND(m_elem->record_h264, "Recording H264 video to: %s", m_config.record_h264.c_str());
 
 	// Start the pipeline
 	if(gst_element_set_state(m_pipeline, GST_STATE_PLAYING) == GST_STATE_CHANGE_FAILURE)
@@ -532,8 +582,19 @@ bool PepperCamera::run_stream()
 		return false;
 	}
 
+	// Update and publish the config ID
+	m_config_id.data++;
+	ROS_INFO("Running pipeline with config ID %u", m_config_id.data);
+	m_pub_config_id.publish(m_config_id);
+
+	// Advertise the reconfigure service
+	m_srv_reconfigure = m_nh_interface.advertiseService("camera/" + m_config.camera_name + "/reconfigure", &PepperCamera::handle_reconfigure, this);
+
 	// Run the main loop
 	g_main_loop_run(m_main_loop);
+
+	// Unadvertise the reconfigure service
+	m_srv_reconfigure.shutdown();
 
 	// Return success
 	return true;
@@ -584,6 +645,50 @@ void PepperCamera::cleanup_stream()
 }
 
 //
+// ROS callbacks
+//
+
+// Reconfigure service handler
+bool PepperCamera::handle_reconfigure(Reconfigure::Request& req, Reconfigure::Response& res)
+{
+	// Display that a reconfigure event has occurred
+	ROS_INFO("Received reconfigure service call%s", (req.force ? " (force)..." : "..."));
+
+	// Check whether a reconfigure is needed
+	bool reconfigure = true;
+	if(!req.force)
+	{
+		Config new_config(false);
+		if(!configure(new_config))
+		{
+			ROS_ERROR("Failed to reconfigure Pepper camera stream => Leaving stream as it is...");
+			res.config_id = m_config_id.data;
+			return false;
+		}
+		reconfigure = (new_config != m_config);
+	}
+
+	// Trigger the reconfigure if required
+	if(reconfigure)
+	{
+		if(!m_pending_reconfigure)
+		{
+			m_pending_reconfigure = true;
+			post_cancel_main_loop();
+		}
+		res.config_id = m_config_id.data + 1U;
+	}
+	else
+	{
+		ROS_INFO("Configuration is unchanged => No reconfigure action required");
+		res.config_id = m_config_id.data;
+	}
+
+	// Return that the service call succeeded
+	return true;
+}
+
+//
 // ROS utilities
 //
 
@@ -595,7 +700,7 @@ void PepperCamera::publish_camera_info(const ros::Time& stamp)
 	{
 		m_pub_camera_info_stamp = stamp;
 		sensor_msgs::CameraInfoPtr camera_info(new sensor_msgs::CameraInfo(m_camera_info_manager.getCameraInfo()));
-		camera_info->header.frame_id = m_camera_frame;
+		camera_info->header.frame_id = m_config.camera_frame;
 		camera_info->header.stamp = stamp;
 		m_pub_camera_info.publish(camera_info);
 	}
@@ -798,7 +903,7 @@ GstFlowReturn PepperCamera::publish_callback(GstElement* appsink, PublishImageTy
 					// Retrieve the raw data pointer and size
 					gsize& data_size = memory_info.size;
 					guint8*& data_ptr = memory_info.data;
-					ros::Time data_stamp((m_pipeline->base_time + buffer->pts) * 1e-9 + m_pipeline_time_offset.toSec() + m_time_offset);
+					ros::Time data_stamp((m_pipeline->base_time + buffer->pts) * 1e-9 + m_pipeline_time_offset.toSec() + m_config.time_offset);
 
 					// Publish a camera info message
 					publish_camera_info(data_stamp);
@@ -817,7 +922,7 @@ GstFlowReturn PepperCamera::publish_callback(GstElement* appsink, PublishImageTy
 
 						// Publish an image message
 						sensor_msgs::CompressedImagePtr image(new sensor_msgs::CompressedImage());
-						image->header.frame_id = m_camera_frame;
+						image->header.frame_id = m_config.camera_frame;
 						image->header.stamp = data_stamp;
 						image->format = "jpeg";
 						image->data.insert(image->data.end(), data_ptr, data_ptr + data_size);
@@ -850,7 +955,7 @@ GstFlowReturn PepperCamera::publish_callback(GstElement* appsink, PublishImageTy
 						{
 							// Publish an image message
 							sensor_msgs::ImagePtr image(new sensor_msgs::Image());
-							image->header.frame_id = m_camera_frame;
+							image->header.frame_id = m_config.camera_frame;
 							image->header.stamp = data_stamp;
 							image->width = cur_caps_width;
 							image->height = cur_caps_height;
@@ -888,7 +993,7 @@ GstFlowReturn PepperCamera::publish_callback(GstElement* appsink, PublishImageTy
 						{
 							// Publish an image message
 							sensor_msgs::ImagePtr image(new sensor_msgs::Image());
-							image->header.frame_id = m_camera_frame;
+							image->header.frame_id = m_config.camera_frame;
 							image->header.stamp = data_stamp;
 							image->width = cur_caps_width;
 							image->height = cur_caps_height;
@@ -993,7 +1098,7 @@ void PepperCamera::configure_queue(GstElement* queue)
 		return;
 
 	// Enable only a byte limit on the queue
-	g_object_set(queue, "max-size-buffers", (guint) 0U, "max-size-bytes", (guint) (m_queue_size_mb * 1048576U), "max-size-time", (guint64) 0LU, NULL);
+	g_object_set(queue, "max-size-buffers", (guint) 0U, "max-size-bytes", (guint) (m_config.queue_size_mb * 1048576U), "max-size-time", (guint64) 0LU, NULL);
 
 	// Handle queue overrun
 	g_signal_connect(queue, "overrun", G_CALLBACK(PepperCamera::queue_overrun_callback), this);
@@ -1047,6 +1152,23 @@ void PepperCamera::gst_object_unref_safe(GstObject** object_ptr)
 {
 	// Clear the pointer and unref the object
 	g_clear_pointer(object_ptr, gst_object_unref);
+}
+
+// Post a callback into the main loop to cancel it
+void PepperCamera::post_cancel_main_loop()
+{
+	// Post the cancel callback with high priority
+	g_idle_add_full(G_PRIORITY_HIGH, PC_G_SOURCE_FUNC(PepperCamera::cancel_main_loop_callback), this, NULL);
+}
+
+// Cancel main loop callback
+gboolean PepperCamera::cancel_main_loop_callback(PepperCamera* pc)
+{
+	// Cancel the main loop
+	pc->cancel_main_loop();
+
+	// Remove this callback source
+	return G_SOURCE_REMOVE;
 }
 
 // Cancel the main loop
