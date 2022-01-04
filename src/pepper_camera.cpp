@@ -3,6 +3,7 @@
 
 // Includes
 #include <pepper_camera/pepper_camera.h>
+#include <pepper_camera/pepper_camera_remote.h>
 #include <sensor_msgs/image_encodings.h>
 #include <sensor_msgs/CompressedImage.h>
 #include <sensor_msgs/CameraInfo.h>
@@ -49,13 +50,19 @@ void PepperCamera::run()
 		else
 		{
 			bool ran_stream = false;
-			if(!init_stream())
-				ROS_FATAL("Failed to initialise Pepper camera stream");
-			else if(!run_stream())
-				ROS_FATAL("Failed to run Pepper camera stream");
+			if(!start_remote())
+				ROS_FATAL("Failed to start the remote camera stream");
 			else
-				ran_stream = true;
-			cleanup_stream();
+			{
+				if(!init_stream())
+					ROS_FATAL("Failed to initialise Pepper camera stream");
+				else if(!run_stream())
+					ROS_FATAL("Failed to run Pepper camera stream");
+				else
+					ran_stream = true;
+				cleanup_stream();
+				stop_remote();
+			}
 			if(ran_stream)
 			{
 				if(m_pending_reconfigure)
@@ -87,7 +94,14 @@ void PepperCamera::run()
 void PepperCamera::Config::reset()
 {
 	// Reset all configuration variables to their default values
-	port = 3016;                                   // Port to listen for UDP packets
+	cmd_enabled = false;                           // Whether to auto-start the remote gstreamer pipeline via TCP
+	cmd_remote.clear();                            // IP address or host to start the remote gstreamer pipeline on
+	cmd_port = 3006;                               // Port to use for remote TCP commands
+	cmd_device = 0;                                // Video device number to use on the remote
+	cmd_width = 640;                               // Camera image width (pixels)
+	cmd_height = 480;                              // Camera image height (pixels)
+	cmd_quality = 75;                              // JPEG compression quality to use
+	udp_port = 3016;                               // Port to listen on for UDP packets
 	auto_retry = false;                            // Whether to auto-retry the camera pipeline if it exits
 	publish_jpeg = false;                          // Whether to publish JPEG images
 	publish_yuv = false;                           // Whether to publish YUV images
@@ -112,7 +126,14 @@ void PepperCamera::Config::reset()
 bool PepperCamera::Config::operator==(const Config& other)
 {
 	return (
-		port == other.port &&
+		cmd_enabled == other.cmd_enabled &&
+		cmd_remote == other.cmd_remote &&
+		cmd_port == other.cmd_port &&
+		cmd_device == other.cmd_device &&
+		cmd_width == other.cmd_width &&
+		cmd_height == other.cmd_height &&
+		cmd_quality == other.cmd_quality &&
+		udp_port == other.udp_port &&
 		auto_retry == other.auto_retry &&
 		publish_jpeg == other.publish_jpeg &&
 		publish_yuv == other.publish_yuv &&
@@ -155,7 +176,14 @@ bool PepperCamera::configure(Config& config) const
 	config.reset();
 
 	// Customise configuration variables based on ROS parameters
-	m_nh_param.getParam("port", config.port);
+	m_nh_param.getParam("cmd_enabled", config.cmd_enabled);
+	m_nh_param.getParam("cmd_remote", config.cmd_remote);
+	m_nh_param.getParam("cmd_port", config.cmd_port);
+	m_nh_param.getParam("cmd_device", config.cmd_device);
+	m_nh_param.getParam("cmd_width", config.cmd_width);
+	m_nh_param.getParam("cmd_height", config.cmd_height);
+	m_nh_param.getParam("cmd_quality", config.cmd_quality);
+	m_nh_param.getParam("udp_port", config.udp_port);
 	m_nh_param.getParam("auto_retry", config.auto_retry);
 	m_nh_param.getParam("publish_jpeg", config.publish_jpeg);
 	m_nh_param.getParam("publish_yuv", config.publish_yuv);
@@ -181,12 +209,20 @@ bool PepperCamera::configure(Config& config) const
 	ensure_extension(config.record_h264, ".mkv");
 
 	// Range checking
+	config.cmd_port = std::min(std::max(config.cmd_port, 1), 65535);
+	config.cmd_device = std::min(std::max(config.cmd_device, 1), 255);
+	config.cmd_width = std::max(config.cmd_width, 1);
+	config.cmd_height = std::max(config.cmd_height, 1);
+	config.cmd_quality = std::min(std::max(config.cmd_quality, 1), 100);
+	config.udp_port = std::min(std::max(config.udp_port, 1), 65535);
 	config.record_jpegs_max = std::max(config.record_jpegs_max, 0);
 	config.record_h264_bitrate = std::max(config.record_h264_bitrate, 50);
 	config.queue_size_mb = std::max(config.queue_size_mb, 1);
 	config.publish_queue_size = std::max(config.publish_queue_size, 1);
 
 	// Dynamic default values
+	if(config.cmd_remote.empty())
+		config.cmd_remote = "127.0.0.1";
 	if(config.camera_name.empty())
 		config.camera_name = "top";
 	if(config.camera_frame.empty())
@@ -201,6 +237,43 @@ bool PepperCamera::configure(Config& config) const
 //
 // Stream management
 //
+
+// Start the remote camera stream
+bool PepperCamera::start_remote()
+{
+	// Nothing to do if we are not responsible for starting the remote
+	if(!m_config.cmd_enabled)
+	{
+		ROS_INFO("Remote camera stream should be manually launched");
+		return true;
+	}
+
+	// Start the remote camera stream
+	ROS_INFO("Configuring remote camera stream for video device %d to %dx%d with quality %d%%", m_config.cmd_device, m_config.cmd_width, m_config.cmd_height, m_config.cmd_quality);
+	if(PepperCameraRemote::start_camera(m_config.cmd_remote, m_config.cmd_port, m_config.udp_port, m_config.cmd_device, m_config.cmd_width, m_config.cmd_height, m_config.cmd_quality))
+	{
+		ROS_INFO("Started remote camera stream for video device %d on %s:%d via TCP port %d", m_config.cmd_device, m_config.cmd_remote.c_str(), m_config.udp_port, m_config.cmd_port);
+		return true;
+	}
+	else
+	{
+		ROS_ERROR("Failed to start remote camera stream for video device %d on %s:%d via TCP port %d", m_config.cmd_device, m_config.cmd_remote.c_str(), m_config.udp_port, m_config.cmd_port);
+		return false;
+	}
+}
+
+// Stop the remote camera stream
+void PepperCamera::stop_remote()
+{
+	// Stop the remote camera stream
+	if(m_config.cmd_enabled)
+	{
+		if(PepperCameraRemote::stop_camera(m_config.cmd_remote, m_config.cmd_port, m_config.udp_port, m_config.cmd_device))
+			ROS_INFO("Stopped remote camera stream for video device %d on %s:%d via TCP port %d", m_config.cmd_device, m_config.cmd_remote.c_str(), m_config.udp_port, m_config.cmd_port);
+		else
+			ROS_ERROR("Failed to stop remote camera stream for video device %d on %s:%d via TCP port %d", m_config.cmd_device, m_config.cmd_remote.c_str(), m_config.udp_port, m_config.cmd_port);
+	}
+}
 
 // Initialise the Pepper camera stream
 bool PepperCamera::init_stream()
@@ -318,7 +391,7 @@ bool PepperCamera::init_stream()
 
 	// Configure/add the UDP source
 	GstCaps* udpsrc_caps = gst_caps_new_simple("application/x-rtp", "encoding-name", G_TYPE_STRING, "JPEG", NULL);
-	g_object_set(m_elem->udpsrc, "port", (gint) m_config.port, "caps", udpsrc_caps, NULL);
+	g_object_set(m_elem->udpsrc, "port", (gint) m_config.udp_port, "caps", udpsrc_caps, NULL);
 	gst_caps_unref(udpsrc_caps);
 	gst_bin_add_many_ref(pipeline_bin, m_elem->udpsrc, m_elem->rtpjpegdepay, NULL);
 
@@ -557,7 +630,7 @@ bool PepperCamera::run_stream()
 {
 	// Summarise the pipeline that's about to run
 	ROS_INFO("Running Pepper camera stream...");
-	ROS_INFO("Listening to UDP packets on port %d", m_config.port);
+	ROS_INFO("Listening to UDP packets on port %d", m_config.udp_port);
 	ROS_INFO("Streaming %s camera (TF frame: %s)", m_config.camera_name.c_str(), m_config.camera_frame.c_str());
 	ROS_INFO_COND(m_config.time_offset != 0.0, "Applying frame timestamp offset of %+.3fs", m_config.time_offset);
 	ROS_INFO_COND(m_elem->publish_jpeg || m_elem->publish_yuv || m_elem->publish_rgb, "Publishing camera info on topic: %s", m_pub_camera_info.getTopic().c_str());

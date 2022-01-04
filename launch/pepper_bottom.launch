@@ -4,7 +4,7 @@
 		<param name="camera_name" value="bottom"/>
 		<param name="camera_frame" value="/camera_bottom"/>
 		<param name="camera_info_url" value="package://pepper_camera/calibration/pepper_bottom.yaml"/>
-		<param name="port" value="3017"/>
+		<param name="udp_port" value="3017"/>
 		<param name="publish_rgb" value="true"/>
 		<param name="preview" value="false"/>
 	</node>

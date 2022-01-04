@@ -35,6 +35,7 @@ include_directories(
 
 add_library(pepper_camera
 	src/pepper_camera.cpp
+	src/pepper_camera_remote.cpp
 )
 add_dependencies(pepper_camera
 	${pepper_camera_EXPORTED_TARGETS}

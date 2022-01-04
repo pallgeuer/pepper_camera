@@ -41,6 +41,8 @@ namespace pepper_camera
 		bool configure();
 
 		// Stream management
+		bool start_remote();
+		void stop_remote();
 		bool init_stream();
 		bool run_stream();
 		void cleanup_stream();
@@ -54,7 +56,14 @@ namespace pepper_camera
 			void reset();
 			bool operator==(const Config& other);
 			bool operator!=(const Config& other) { return !operator==(other); }
-			int port;
+			bool cmd_enabled;
+			std::string cmd_remote;
+			int cmd_port;
+			int cmd_device;
+			int cmd_width;
+			int cmd_height;
+			int cmd_quality;
+			int udp_port;
 			bool auto_retry;
 			bool publish_jpeg;
 			bool publish_yuv;

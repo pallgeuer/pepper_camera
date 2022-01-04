@@ -4,7 +4,7 @@
 		<param name="camera_name" value="top"/>
 		<param name="camera_frame" value="/camera_top"/>
 		<param name="camera_info_url" value="package://pepper_camera/calibration/pepper_top.yaml"/>
-		<param name="port" value="3016"/>
+		<param name="udp_port" value="3016"/>
 		<param name="publish_rgb" value="true"/>
 		<param name="preview" value="false"/>
 	</node>
