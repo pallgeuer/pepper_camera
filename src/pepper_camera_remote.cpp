@@ -3,6 +3,7 @@
 
 // Includes
 #include <pepper_camera/pepper_camera_remote.h>
+#include <pepper_camera_server/pepper_camera_packets.h>
 #include <arpa/inet.h>
 #include <unistd.h>
 #include <cstring>

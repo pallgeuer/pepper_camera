@@ -29,6 +29,7 @@ catkin_package(
 
 include_directories(
 	include
+	server/include
 	${catkin_INCLUDE_DIRS}
 	${GSTREAMER_INCLUDE_DIRS}
 )
