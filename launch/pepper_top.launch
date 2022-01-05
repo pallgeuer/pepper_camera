@@ -1,12 +1,20 @@
 <launch>
 
+	<arg name="cmd" default="true"/>
+	<arg name="ip" default="192.168.104.115"/>
+
 	<node name="pepper_camera_top" pkg="pepper_camera" type="node" output="screen">
 		<param name="camera_name" value="top"/>
 		<param name="camera_frame" value="/camera_top"/>
 		<param name="camera_info_url" value="package://pepper_camera/calibration/pepper_top.yaml"/>
+		<param name="cmd_enabled" value="$(arg cmd)"/>
+		<param name="cmd_remote" value="$(arg ip)"/>
+		<param name="cmd_port" value="3006"/>
+		<param name="cmd_device" value="0"/>
+		<param name="cmd_width" value="640"/>
+		<param name="cmd_height" value="480"/>
+		<param name="cmd_quality" value="70"/>
 		<param name="udp_port" value="3016"/>
-		<param name="publish_rgb" value="true"/>
-		<param name="preview" value="false"/>
 	</node>
 
 </launch>
