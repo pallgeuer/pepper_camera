@@ -210,7 +210,7 @@ bool PepperCamera::configure(Config& config) const
 
 	// Range checking
 	config.cmd_port = std::min(std::max(config.cmd_port, 1), 65535);
-	config.cmd_device = std::min(std::max(config.cmd_device, 1), 255);
+	config.cmd_device = std::min(std::max(config.cmd_device, 0), 255);
 	config.cmd_width = std::max(config.cmd_width, 1);
 	config.cmd_height = std::max(config.cmd_height, 1);
 	config.cmd_quality = std::min(std::max(config.cmd_quality, 1), 100);

@@ -34,22 +34,22 @@ namespace pepper_camera
 	// Start camera packet struct
 	struct __attribute((__packed__)) StartCameraStruct
 	{
-		char cmd;  // Should be 'B'
-		uint8_t device;
-		uint16_t port;
-		uint32_t ip;
-		uint16_t width;
-		uint16_t height;
-		uint8_t quality;
+		char cmd;         // Must be 'B'
+		uint8_t device;   // 0 = /dev/video0, 1 = /dev/video1
+		uint16_t port;    // Range 1-65535
+		uint32_t ip;      // Network byte order
+		uint16_t width;   // Range 1-
+		uint16_t height;  // Range 1-
+		uint8_t quality;  // Range 1-100
 	};
 
 	// Stop camera packet struct
 	struct __attribute((__packed__)) StopCameraStruct
 	{
-		char cmd;  // Should be 'E'
-		uint8_t device;
-		uint16_t port;
-		uint32_t ip;
+		char cmd;        // Must be 'E'
+		uint8_t device;  // 0 = /dev/video0, 1 = /dev/video1
+		uint16_t port;   // Range 1-65535
+		uint32_t ip;     // Network byte order
 	};
 }
 

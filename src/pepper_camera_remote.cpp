@@ -125,14 +125,14 @@ int PepperCameraRemote::connect(const std::string& remote_host, int remote_port)
 	return sockfd;
 }
 
-// Get the sending IP address of the local machine
+// Get the sending IP address of the local machine in network byte order
 uint32_t PepperCameraRemote::get_send_addr(int connection)
 {
 	// Get the local IP address
 	sockaddr_in addr;
 	socklen_t addr_len = sizeof(sockaddr_in);
 	if(getsockname(connection, (sockaddr*) &addr, &addr_len) == 0)
-		return ntohl(addr.sin_addr.s_addr);
+		return addr.sin_addr.s_addr;
 	else
 		return 0U;
 }
