@@ -85,16 +85,13 @@ int PepperCameraRemote::connect(const std::string& remote_host, int remote_port)
 
 	// Resolve the remote address
 	bool found_address = false;
-	sockaddr_storage sas;
-	socklen_t sas_len;
+	sockaddr_in sas;
 	in_addr ina;
 	if(inet_pton(AF_INET, remote_host.c_str(), &ina) == 1)
 	{
-		sockaddr_in* address = (sockaddr_in*) &sas;
-		sas_len = sizeof(sockaddr_in);
-		address->sin_family = AF_INET;
-		address->sin_port = htons(remote_port);
-		address->sin_addr.s_addr = ina.s_addr;
+		sas.sin_family = AF_INET;
+		sas.sin_port = htons(remote_port);
+		sas.sin_addr.s_addr = ina.s_addr;
 		found_address = true;
 	}
 	else
@@ -105,18 +102,16 @@ int PepperCameraRemote::connect(const std::string& remote_host, int remote_port)
 		hints.ai_socktype = SOCK_STREAM;
 		if(getaddrinfo(remote_host.c_str(), NULL, &hints, &addr) == 0)
 		{
-			sockaddr_in* address = (sockaddr_in*) &sas;
-			sas_len = sizeof(sockaddr_in);
-			std::memcpy(address, addr->ai_addr, addr->ai_addrlen);
-			address->sin_family = addr->ai_family;
-			address->sin_port = htons(remote_port);
+			std::memcpy(&sas, addr->ai_addr, addr->ai_addrlen);
+			sas.sin_family = addr->ai_family;
+			sas.sin_port = htons(remote_port);
 			freeaddrinfo(addr);
 			found_address = true;
 		}
 	}
 
 	// Connect to the remote address
-	if(!(found_address && ::connect(sockfd, (sockaddr*) &sas, sas_len) == 0))
+	if(!(found_address && ::connect(sockfd, (sockaddr*) &sas, sizeof(sas)) == 0))
 	{
 		disconnect(sockfd);
 		return -1;

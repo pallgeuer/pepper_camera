@@ -4,6 +4,7 @@
 // Includes
 #include <pepper_camera/pepper_camera.h>
 #include <pepper_camera/pepper_camera_remote.h>
+#include <pepper_camera_server/pepper_camera_packets.h>
 #include <sensor_msgs/image_encodings.h>
 #include <sensor_msgs/CompressedImage.h>
 #include <sensor_msgs/CameraInfo.h>
@@ -210,7 +211,7 @@ bool PepperCamera::configure(Config& config) const
 
 	// Range checking
 	config.cmd_port = std::min(std::max(config.cmd_port, 1), 65535);
-	config.cmd_device = std::min(std::max(config.cmd_device, 0), 255);
+	config.cmd_device = std::min(std::max(config.cmd_device, 0), MAX_VIDEO_DEVICE);
 	config.cmd_width = std::max(config.cmd_width, 1);
 	config.cmd_height = std::max(config.cmd_height, 1);
 	config.cmd_quality = std::min(std::max(config.cmd_quality, 1), 100);
@@ -441,7 +442,7 @@ bool PepperCamera::init_stream()
 	if(m_elem->publish_yuv)
 	{
 		configure_queue(m_elem->publish_yuv_queue);
-		GstCaps* publish_yuv_caps = gst_caps_new_simple("video/x-raw", "format", G_TYPE_STRING, "I420", NULL);  // TODO: Want another YUV format compatible with ROS?
+		GstCaps* publish_yuv_caps = gst_caps_new_simple("video/x-raw", "format", G_TYPE_STRING, "I420", NULL);
 		g_object_set(m_elem->publish_yuv, "caps", publish_yuv_caps, "emit-signals", TRUE, "sync", FALSE, NULL);
 		gst_caps_unref(publish_yuv_caps);
 		g_signal_connect(m_elem->publish_yuv, "new-sample", G_CALLBACK(PepperCamera::publish_yuv_callback), this);

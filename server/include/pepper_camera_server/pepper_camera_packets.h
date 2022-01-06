@@ -11,6 +11,9 @@
 // Pepper camera namespace
 namespace pepper_camera
 {
+	// Constants
+	const int MAX_VIDEO_DEVICE = 255;
+
 	// Start camera packet struct
 	struct __attribute((__packed__)) StartCameraStruct
 	{
