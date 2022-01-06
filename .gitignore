@@ -4,3 +4,4 @@
 *.d
 *.o
 /server/pepper_camera_server
+/server/build-*
