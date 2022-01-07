@@ -45,7 +45,7 @@ Go to the Pepper robot page by entering the robot's IP address in the browser an
 
 SSH into the Pepper robot and start manually streaming top camera video (to have this happen automatically refer to Auto Launch):
 ```sh
-gst-launch-0.10 v4l2src device=/dev/video0 ! 'video/x-raw-yuv,width=640,height=480' ! jpegenc quality=QUALITY ! rtpjpegpay ! udpsink sync=false host=IP port=PORT
+gst-launch-0.10 v4l2src device=/dev/video0 ! video/x-raw-yuv,width=640,height=480 ! jpegenc quality=QUALITY ! rtpjpegpay ! udpsink sync=false host=IP port=PORT
 ```
 Note that:
 * `IP` should be the IP address of the PC you wish to stream the video to, and `PORT` the corresponding target port
@@ -75,7 +75,10 @@ You can check the capabilities of a camera (doesn't seem to work so well on the 
 v4l2-ctl --list-formats-ext
 v4l2-ctl --device=/dev/video0 --all  # <-- Note that this displays sticky information from the last configured use of the camera
 ```
-For some webcams it might be advantageous to use an MJPEG device format, as opposed to YUV. This potentially provides larger images and higher framerates. Not so for the Pepper though.
+For some webcams it might be advantageous to use an MJPEG device format, as opposed to YUV. This potentially provides larger images and higher framerates. Not so for the Pepper though. An example MJPEG GStreamer pipeline would be:
+```sh
+gst-launch-0.10 v4l2src device=/dev/video0 ! image/jpeg,width=640,height=480 ! rtpjpegpay ! udpsink sync=false host=IP port=PORT
+```
 
 Alright, now with the GStreamer pipeline running on the robot (and no GStreamer test pipeline from above still running on your computer), you can launch the Pepper camera node:
 ```sh
@@ -88,6 +91,12 @@ rostopic hz /camera/top/rgb -w 72
 rosrun rqt_image_view rqt_image_view /camera/top/rgb
 ```
 See Configuration below to see how to configure the launch process and/or reconfigure the running ROS node.
+
+Note that on the Pepper you can stream images larger than 640x480 (up to 2040x1530), but then you must capture at exactly 2560x1920 from the video device and dynamically downscale it to the desired resolution.
+```sh
+gst-launch-0.10 v4l2src device=/dev/video0 ! video/x-raw-yuv,width=2560,height=1920 ! videoscale ! video/x-raw-yuv,width=2040,height=1530 ! jpegenc quality=70 ! rtpjpegpay ! udpsink sync=false host=134.100.10.212 port=3016
+```
+This pipeline gives a solid 5.7fps for a suitably good network quality, but there is a noticeable delay between capture and image presentation (albeit essentially fixed). You can also see effects of the rolling shutter if anything moves too fast, because the sensor is just very slow at iterating over its entire sensor array. The `rtpjpegpay` GStreamer element has a hardcoded limit of 2040 for image dimensions for whatever reason, which is why 2040x1530 is the largest size.
 
 Auto Launch
 -----------
@@ -176,7 +185,7 @@ There are many ROS parameters that govern what the ROS node does, e.g. what topi
 ```sh
 rosparam set /pepper_camera_top/preview true
 ```
-If the node is already running then the new parameters are only read in once you call the `reconfigure` service:
+Just note that ROS parameter values set on the command line are overridden by values specified inside the launch file (use args if you need to dynamically change them). If the node is already running then the new parameters are only read in once you call the `reconfigure` service:
 ```sh
 source PATH/TO/pepper_ros_ws/devel/setup.bash  # <-- Only required once per terminal/bash session
 rosservice call /camera/top/reconfigure "force: false"
