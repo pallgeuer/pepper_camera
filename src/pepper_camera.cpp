@@ -39,7 +39,7 @@ PepperCamera::PepperCamera(ros::NodeHandle& nh_interface, ros::NodeHandle& nh_pa
 void PepperCamera::run()
 {
 	// Advertise the config ID publisher
-	m_pub_config_id = m_nh_interface.advertise<std_msgs::UInt32>("camera/config_id", 1, true);
+	m_pub_config_id = m_nh_param.advertise<std_msgs::UInt32>("config_id", 1, true);
 	m_pub_config_id.publish(m_config_id);
 
 	// Configure and run the required pipeline
