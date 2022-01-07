@@ -57,11 +57,11 @@ Note that:
 
 You can *test* that the network stream is arriving at your PC and can be decoded using:
 ```sh
-gst-launch-1.0 udpsrc port=[PORT] ! application/x-rtp,encoding-name=JPEG ! rtpjpegdepay ! jpegdec ! fpsdisplaysink
+gst-launch-1.0 udpsrc port=PORT ! application/x-rtp,encoding-name=JPEG ! rtpjpegdepay ! jpegdec ! fpsdisplaysink  # <-- Replace PORT with the correct port
 ```
 You can also in parallel save (in the current folder) the last 300 received JPEGs at any time using:
 ```sh
-gst-launch-1.0 udpsrc port=[PORT] ! application/x-rtp,encoding-name=JPEG ! rtpjpegdepay ! tee name=jpegstream ! queue ! jpegdec ! fpsdisplaysink jpegstream. ! queue ! multifilesink location="frame%04d.jpg" max-files=300
+gst-launch-1.0 udpsrc port=PORT ! application/x-rtp,encoding-name=JPEG ! rtpjpegdepay ! tee name=jpegstream ! queue ! jpegdec ! fpsdisplaysink jpegstream. ! queue ! multifilesink location="frame%04d.jpg" max-files=300  # <-- Replace PORT with the correct port
 ```
 
 If you're not getting the framerate you expect, you can check the current WiFi connection speed of the Pepper robot using (on the robot):
@@ -75,9 +75,9 @@ You can check the capabilities of a camera (doesn't seem to work so well on the 
 v4l2-ctl --list-formats-ext
 v4l2-ctl --device=/dev/video0 --all  # <-- Note that this displays sticky information from the last configured use of the camera
 ```
-For some webcams it might be advantageous to use an MJPEG device format, as opposed to YUV. This potentially provides larger images and higher framerates.
+For some webcams it might be advantageous to use an MJPEG device format, as opposed to YUV. This potentially provides larger images and higher framerates. Not so for the Pepper though.
 
-Alright, now with the GStreamer pipeline running on the robot (and no GStreamer test pipeline from above running on your computer), you can launch the Pepper camera node:
+Alright, now with the GStreamer pipeline running on the robot (and no GStreamer test pipeline from above still running on your computer), you can launch the Pepper camera node:
 ```sh
 source PATH/TO/pepper_ros_ws/devel/setup.bash         # <-- Only required once per terminal/bash session
 roslaunch pepper_camera pepper_top.launch cmd:=false  # <-- Could alternatively launch pepper_bottom.launch
@@ -172,7 +172,7 @@ If someone else has already configured the robot for auto-launching, then that i
 
 Configuration
 -------------
-There are many ROS parameters that govern what the ROS node does, e.g. what topics it publishes the images on and in what format, whether it records videos (MJPEG/x264) or jpegs (multifile) to disk in parallel, etc. The best place to see the latest list of ROS parameters is in `pepper_camera.cpp` in the definition of the `reset()` function. They are documented there in comments. All ROS parameters starting with `cmd_` are only relevant if `cmd_enabled` is `true`, i.e. only if auto-launching is enabled. Here is an example of setting a ROS parameter on the command line so that the node opens a preview window of the data it is receiving:
+There are many ROS parameters that govern what the ROS node does, e.g. what topics it publishes the images on and in what format, whether it records videos (MJPEG/x264) or jpegs (multifile) to disk in parallel, etc. The best place to see the latest list of ROS parameters is in `src/pepper_camera.cpp` in the definition of the `reset()` function. They are documented there in comments. All ROS parameters starting with `cmd_` are only relevant if `cmd_enabled` is `true`, i.e. only if auto-launching is enabled. Here is an example of setting a ROS parameter on the command line so that the node opens a preview window of the data it is receiving:
 ```sh
 rosparam set /pepper_camera_top/preview true
 ```
