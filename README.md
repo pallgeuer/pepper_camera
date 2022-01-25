@@ -1,6 +1,8 @@
 Pepper Camera Streamer
 ======================
 
+**Author:** Philipp Allgeuer <[philipp.allgeuer@uni-hamburg.de](mailto:philipp.allgeuer@uni-hamburg.de)>
+
 This is a ROS package developed by Philipp Allgeuer for efficiently streaming camera images from the Pepper robot and making them available in ROS. With minimal changes as to how the ROS node is launched it can also be used on any other Linux-based robot. This project was directly inspired by the GSCam project, and also uses GStreamer to do the heavy lifting.
 
 Using `getImageRemote()` from the NAOqi API can obtain VGA (640x480) images at a stable frame rate of 24fps if the network bandwidth supports a constant ~18MB/s data rate, which is often challenging if not impossible over WiFi (I get ~0.9fps due to very poor WiFi quality). Streaming video with the API like this also costs around 45% extra CPU usage in the `naoqi-service` service, increasing it from ~20% to ~65%. There is thus little headroom to stream a second camera or use the NAOqi API for other e.g. sensor/control-related purposes.
